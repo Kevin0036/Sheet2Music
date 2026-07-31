@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sheet2Music</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Sheet2Music</h1>
+    <p class="subtitle">PDF → MusicXML / MIDI / MP3 · 本地乐谱转换工作台</p>
+  </header>
+
+  <section id="system-panel" class="card system-panel">
+    <h2 id="system-toggle" class="system-toggle" role="button" tabindex="0" aria-expanded="true">
+      环境检查
+      <span id="system-badge" class="badge"></span>
+      <span class="caret">▾</span>
+    </h2>
+    <div id="system-body" class="system-body">
+      <ul id="system-status" class="system-status"></ul>
+      <div id="weights-section" class="weights-section" hidden>
+        <div class="weights-actions">
+          <button id="weights-download-btn" type="button">下载模型权重</button>
+          <span id="weights-status" class="weights-status"></span>
+        </div>
+        <div id="weights-progress" class="progress-wrap" hidden>
+          <div id="weights-progress-bar" class="progress-bar"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section class="left">
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="上传 PDF">
+        <p class="dz-title">把 PDF 拖到这里，或点击选择文件</p>
+        <button id="pick-file" type="button">选择文件</button>
+        <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />
+      </div>
+
+      <div id="preview-area" class="card preview-area" hidden>
+        <h2>首页预览</h2>
+        <img id="preview-img" alt="乐谱首页预览" />
+        <div id="file-meta" class="file-meta"></div>
+      </div>
+    </section>
+
+    <section class="right">
+      <div id="params-card" class="card">
+        <h2>转换参数</h2>
+
+        <label for="bpm">BPM <em>（必填，正整数）</em></label>
+        <input id="bpm" type="number" min="1" step="1" placeholder="例如 120" disabled />
+
+        <label for="time-signature">拍号</label>
+        <input id="time-signature" type="text" value="4/4" disabled />
+
+        <label class="checkbox gpu-option">
+          <input id="use-gpu" type="checkbox" disabled />
+          使用 GPU 加速（自动检测，不可用时回退 CPU）
+        </label>
+
+        <fieldset id="outputs" disabled>
+          <legend>输出格式</legend>
+          <label class="checkbox"><input type="checkbox" value="musicxml" checked /> MusicXML</label>
+          <label class="checkbox"><input type="checkbox" value="midi" checked /> MIDI</label>
+          <label class="checkbox"><input type="checkbox" value="mp3" /> MP3</label>
+          <label class="checkbox"><input type="checkbox" value="zip" /> ZIP 打包</label>
+        </fieldset>
+
+        <div class="actions">
+          <button id="convert-btn" class="primary" disabled>开始转换</button>
+          <button id="reset-btn" class="secondary" disabled>下一份乐谱</button>
+        </div>
+      </div>
+
+      <div id="progress" class="card" hidden>
+        <h2>转换进度</h2>
+        <ol id="stages" class="stages"></ol>
+        <div id="error-box" class="error" hidden></div>
+      </div>
+
+      <div id="results" class="card" hidden>
+        <h2>转换结果</h2>
+        <p id="summary" class="summary"></p>
+        <div id="warnings" class="warnings" hidden></div>
+        <div id="downloads" class="downloads"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

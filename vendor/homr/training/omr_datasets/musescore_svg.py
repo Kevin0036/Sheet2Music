@@ -1,0 +1,396 @@
+# flake8: noqa: S101, B011
+
+import glob
+import math
+import re
+from xml.dom import minidom
+
+from homr import constants
+from homr.simple_logging import eprint
+
+
+class SvgValidationError(Exception):
+    pass
+
+
+class SvgRectangle:
+    def __init__(self, x: int, y: int, width: int, height: int):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+    def intersects(self, rect2: "SvgRectangle") -> bool:
+        # Unpack the rectangles
+        x1, y1, width1, height1 = [self.x, self.y, self.width, self.height]
+        x2, y2, width2, height2 = [rect2.x, rect2.y, rect2.width, rect2.height]
+
+        if x1 + width1 < x2 or x2 + width2 < x1:
+            return False
+
+        if y1 + height1 < y2 or y2 + height2 < y1:
+            return False
+
+        return True
+
+    def merge(self, other: "SvgRectangle") -> "SvgRectangle":
+        x = min(self.x, other.x)
+        y = min(self.y, other.y)
+        width = max(self.x + self.width, other.x + other.width) - x
+        height = max(self.y + self.height, other.y + other.height) - y
+        return SvgRectangle(x, y, width, height)
+
+    def __str__(self) -> str:
+        return f"({self.x}, {self.y}, {self.width}, {self.height})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class BarLine(SvgRectangle):
+    # MuseScore draws a forward-repeat (heavy-light) with a thick polyline
+    # (stroke-width ~7.8) while ordinary barlines are thin (~2.5).
+    # So we use a threshold of 4.0
+    HEAVY_THRESHOLD = 4.0
+
+    def __init__(self, x: int, y: int, width: int, height: int, stroke_width: str) -> None:
+        super().__init__(x, y, width, height)
+        self.is_heavy = float(stroke_width) > self.HEAVY_THRESHOLD
+
+    @classmethod
+    def from_rectangle(cls, rect: SvgRectangle, stroke_width: str) -> "BarLine":
+        return cls(rect.x, rect.y, rect.width, rect.height, stroke_width)
+
+
+class SvgStaff(SvgRectangle):
+    def __init__(self, x: int, y: int, width: int, height: int):
+        super().__init__(x, y, width, height)
+        self.bar_line_x_positions = set()
+
+        # Add the starting and ending barline
+        self.bar_line_x_positions.add(self.x)
+        self.bar_line_x_positions.add(self.x + self.width)
+        self.min_measure_width = 50
+
+    def add_bar_line(self, bar_line: BarLine, is_first: bool) -> None:
+        # a heavy barline (forward-repeat) sitting in the leading clef/key/time
+        # header should not be counted. see Lieder-main/flat/lc4985931-1.svg
+        header_region_ratio = 0.15
+        header_limit = self.x + self.width * header_region_ratio
+        if is_first and bar_line.is_heavy and bar_line.x < header_limit:
+            return
+        already_present = any(
+            abs(bar_line.x - x) < self.min_measure_width for x in self.bar_line_x_positions
+        )
+        if not already_present:
+            self.bar_line_x_positions.add(bar_line.x)
+
+    def remove_bar_line(self, x: int) -> None:
+        self.bar_line_x_positions.discard(x)
+
+    def merge_staff(self, other: "SvgStaff") -> "SvgStaff":
+        if self.number_of_measures != other.number_of_measures:
+            raise ValueError("Can't merge staffs with a different number of measures")
+        x_min = min(self.x, other.x)
+        y_min = min(self.y, other.y)
+        x_max = max(self.x + self.width, other.x + other.width)
+        y_max = max(self.y + self.height, other.y + other.height)
+        result = SvgStaff(x_min, y_min, x_max - x_min, y_max - y_min)
+        for pos in self.bar_line_x_positions:
+            result.bar_line_x_positions.add(pos)
+        return result
+
+    def extend_y_range(self, point: int) -> None:
+        """Extend the staff's vertical range to include the given point."""
+        top = self.y
+        bottom = self.y + self.height
+        if point < top:
+            self.y = point
+            self.height = bottom - point
+        elif point > bottom:
+            self.height = point - top
+
+    def contains_x_position(self, x: int) -> bool:
+        """Check if an x-coordinate falls within this staff's horizontal range."""
+        return self.x <= x <= self.x + self.width
+
+    @property
+    def number_of_measures(self) -> int:
+        return len(self.bar_line_x_positions) - 1
+
+    def __str__(self) -> str:
+        return f"({self.x}, {self.y}, {self.width}, {self.height}): {self.number_of_measures}"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class SvgMusicFile:
+    def __init__(self, filename: str, width: float, height: float, staffs: list[SvgStaff]):
+        self.filename = filename
+        self.width = width
+        self.height = height
+        self.staffs = staffs
+        self.number_of_measures = sum([staff.number_of_measures for staff in staffs])
+
+    def merge_voice_with_next_one(self, voice: int, number_of_voices: int) -> None:
+        """Merge a voice with the next voice within each group.
+
+        Args:
+            voice: Index of the voice to merge (0-based within each group)
+            number_of_voices: Number of voices per group
+
+        For example, if number_of_voices=3 and voice=1:
+        - Merges: staff[1] with staff[2], staff[4] with staff[5], etc.
+        - Result: [0, merged(1,2)], [3, merged(4,5)], ...
+        """
+        if voice < 0 or voice >= number_of_voices - 1:
+            raise ValueError(
+                f"Voice {voice} cannot be merged with the next voice. "
+                f"Valid range is [0, {number_of_voices - 2}] for {number_of_voices} voices."
+            )
+
+        new_staffs: list[SvgStaff] = []
+        i = 0
+
+        while i < len(self.staffs):
+            position_in_group = i % number_of_voices
+
+            if position_in_group == voice:
+                # Merge this staff with the next one
+                if i + 1 < len(self.staffs):
+                    merged_staff = self.staffs[i].merge_staff(self.staffs[i + 1])
+                    new_staffs.append(merged_staff)
+                    i += 2  # Skip both staffs
+                else:
+                    eprint(f"Cannot merge staff at index {i}: no next staff available")
+                    self.number_of_measures = 0
+                    self.staffs = []
+                    return
+            else:
+                # Just append this staff
+                new_staffs.append(self.staffs[i])
+                i += 1
+
+        self.staffs = new_staffs
+
+        # Recalculate number of measures
+        self.number_of_measures = sum(staff.number_of_measures for staff in self.staffs)
+
+
+def get_position_from_multiple_svg_files(musicxml_file: str) -> list[SvgMusicFile]:
+    pattern = musicxml_file.replace(".musicxml", "*.svg")
+    svgs = glob.glob(pattern)
+    sorted_by_id = sorted(svgs, key=lambda x: int(x.split("-")[-1].split(".")[0]))
+    result: list[SvgMusicFile] = []
+    for svg in sorted_by_id:
+        music_file = get_position_information_from_svg(svg)
+        # Sometimes MuseScore renders music-less svg pages
+        # for example, Lieder-main/flat/lc6611874-4.svg has only trailing text/lyrics
+        if music_file.number_of_measures != 0:
+            result.append(music_file)
+    return result
+
+
+def _parse_note_position(note: minidom.Element) -> tuple[float, float]:
+    # collect note/rest:
+    # Older MuseScore: <path transform="matrix(a,b,c,d,e,f)"/> where (e, f) is the position.
+    # Newer MuseScore: <path class="Note" d="M<x>,<y> ..."/> where d is the position.
+    transform = note.getAttribute("transform")
+    if transform:
+        match = re.search(r"matrix\(([^)]*)\)", transform)
+        assert match, f"Could not parse note transform: {transform}"
+        values = [float(v) for v in match.group(1).split(",")]
+        return values[4], values[5]
+
+    class_name = note.getAttribute("class")
+    if class_name in ("Note", "Rest"):
+        points = note.getAttribute("d")
+        match = re.search(r"[Mm]\s*(-?[\d.]+)[\s,]+(-?[\d.]+)", points)
+        assert match, f"Could not parse note position: {points}"
+        return float(match.group(1)), float(match.group(2))
+
+    assert False, f"Unexpected element for note position: {class_name!r}"
+
+
+def _parse_paths(points: str) -> SvgRectangle:
+    [start, end] = points.split()
+    [x1, y1] = start.split(",")
+    [x2, y2] = end.split(",")
+    return SvgRectangle(
+        math.floor(float(x1)),
+        math.floor(float(y1)),
+        math.ceil(float(x2) - float(x1)),
+        math.ceil(float(y2) - float(y1)),
+    )
+
+
+def _combine_staff_lines_and_bar_lines(
+    staff_lines: list[SvgRectangle], bar_lines: list[BarLine]
+) -> list[SvgStaff]:
+    if len(staff_lines) % constants.number_of_lines_on_a_staff != 0:
+        eprint("Warning: Staff lines are not a multiple of 5, but is ", len(staff_lines))
+        return []
+    groups: list[list[SvgRectangle]] = []
+    staffs_sorted_by_y = sorted(staff_lines, key=lambda s: s.y)
+    for i, staff_line in enumerate(staffs_sorted_by_y):
+        if i % constants.number_of_lines_on_a_staff == 0:
+            groups.append([])
+        groups[-1].append(staff_line)
+
+    merged_groups: list[SvgRectangle] = []
+    for group in groups:
+        merged_group = group[0]
+        for line in group[1:]:
+            merged_group = merged_group.merge(line)
+        merged_groups.append(merged_group)
+    staffs = [SvgStaff(staff.x, staff.y, staff.width, staff.height) for staff in merged_groups]
+
+    staff_processed: set[SvgStaff] = set()
+    # Process barlines from left to right
+    for bar_line in sorted(bar_lines, key=lambda b: b.x):
+        for staff in staffs:
+            if staff.intersects(bar_line):
+                is_first = staff not in staff_processed
+                staff_processed.add(staff)
+                staff.add_bar_line(bar_line, is_first=is_first)
+
+    return staffs
+
+
+def _extend_staffs_with_stems(staffs: list[SvgStaff], stems: list[SvgRectangle]) -> None:
+    """Efficiently extend staff vertical ranges to include all stems.
+
+    This function finds the closest staff for each stem and extends that staff's
+    vertical range to include the stem's top and bottom points.
+
+    Args:
+        staffs: List of staffs (assumed to be sorted by y-coordinate)
+        stems: List of stems (will be sorted by y-coordinate internally)
+    """
+    if not staffs or not stems:
+        return
+
+    stems_sorted_by_y = sorted(stems, key=lambda s: s.y)
+
+    # Process each stem and find its closest staff
+    for stem in stems_sorted_by_y:
+        # Find the closest staff by checking which staff's y-range is closest
+        # We use the stem's x-coordinate to determine which staff it belongs to
+        stem_center_x = stem.x + stem.width // 2
+        stem_center_y = stem.y + stem.height // 2
+
+        # Find the best matching staff (one that contains the stem's x position
+        # and is closest in y)
+        best_staff = None
+        best_distance = float("inf")
+
+        for staff in staffs:
+            # Check if stem is within the horizontal range of this staff
+            if staff.contains_x_position(stem_center_x):
+                # Calculate vertical distance from stem center to staff center
+                staff_center_y = staff.y + staff.height // 2
+                distance = abs(stem_center_y - staff_center_y)
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best_staff = staff
+
+        # If no staff contains the stem's x position, find the closest one by y
+        if best_staff is None:
+            for staff in staffs:
+                staff_center_y = staff.y + staff.height // 2
+                distance = abs(stem_center_y - staff_center_y)
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best_staff = staff
+
+        # Extend the staff to include both top and bottom of the stem
+        if best_staff is not None:
+            best_staff.extend_y_range(stem.y)
+            best_staff.extend_y_range(stem.y + stem.height)
+
+
+def _staff_has_content_between(
+    staff: SvgStaff, notes: list[tuple[float, float]], start: float, end: float
+) -> bool:
+    # there're 2 hard-coded tolerances to fit some corner cases.
+    x_tolerance = 5.0
+    y_tolerance = 60.0
+    return any(
+        staff.x <= mx <= staff.x + staff.width
+        and (staff.y - y_tolerance) <= my <= (staff.y + staff.height + y_tolerance)
+        and (start - x_tolerance) <= mx < end
+        for mx, my in notes
+    )
+
+
+def _remove_empty_measures(
+    svg_file: str, staffs: list[SvgStaff], notes: list[tuple[float, float]]
+) -> None:
+    # split `staffs` into several systems.
+    # each system share the same barline x positions
+    systems: dict[tuple[int, ...], list[SvgStaff]] = {}
+    for staff in staffs:
+        key = tuple(sorted(staff.bar_line_x_positions))
+        systems.setdefault(key, []).append(staff)
+
+    for bar_line_x_positions, staffs_in_system in systems.items():
+        for i in range(len(bar_line_x_positions) - 1):
+            start = bar_line_x_positions[i]
+            end = bar_line_x_positions[i + 1]
+            has_content = any(
+                _staff_has_content_between(staff, notes, start, end) for staff in staffs_in_system
+            )
+            if has_content:
+                continue
+            # Typically we drop the barline at the end, but if
+            # this is the last measure, we drop barline at begin.
+            is_trailing = i + 1 == len(bar_line_x_positions) - 1
+            boundary = start if is_trailing else end
+            for staff in staffs_in_system:
+                staff.remove_bar_line(boundary)
+
+
+def get_position_information_from_svg(svg_file: str) -> SvgMusicFile:
+    doc = minidom.parse(svg_file)  # noqa: S318
+    try:
+        svg_element = doc.getElementsByTagName("svg")[0]
+        viewbox = svg_element.getAttribute("viewBox").split()
+        width = float(viewbox[2])
+        height = float(viewbox[3])
+        lines = doc.getElementsByTagName("polyline")
+        staff_lines: list[SvgRectangle] = []
+        bar_lines: list[BarLine] = []
+        stems: list[SvgRectangle] = []
+        for line in lines:
+            class_name = line.getAttribute("class")
+            if class_name == "StaffLines":
+                staff_lines.append(_parse_paths(line.getAttribute("points")))
+            if class_name == "BarLine":
+                bar_lines.append(
+                    BarLine.from_rectangle(
+                        _parse_paths(line.getAttribute("points")),
+                        line.getAttribute("stroke-width"),
+                    )
+                )
+            if class_name == "Stem":
+                stems.append(_parse_paths(line.getAttribute("points")))
+
+        notes: list[tuple[float, float]] = []
+        for path in doc.getElementsByTagName("path"):
+            class_name = path.getAttribute("class")
+            if class_name in ("Note", "Rest"):
+                notes.append(_parse_note_position(path))
+
+        combined = _combine_staff_lines_and_bar_lines(staff_lines, bar_lines)
+
+        # Extend staffs using stem information
+        _extend_staffs_with_stems(combined, stems)
+
+        _remove_empty_measures(svg_file, combined, notes)
+
+        return SvgMusicFile(svg_file, width, height, combined)
+    finally:
+        doc.unlink()

@@ -1,0 +1,102 @@
+# Changelog
+
+All notable changes to this project will be documented here.
+
+## [0.7.0]
+
+### Added
+
+- **Improved grandstaff detection**.
+  Thanks to [@weixlu](https://github.com/weixlu)!
+
+### Changed
+
+- Minimum Python version is now **Python 3.11**
+
+### Fixed
+
+- MusicXML export inconsistencies and compatibility issues. Thanks to [@fablau](https://github.com/fablau)!
+
+## [0.6.2]
+
+### Added
+
+- **Improved accuracy**
+
+## [0.6.1]
+
+### Added
+
+- **Greatly improved GPU inference**.
+  Big thanks again to [@aicelen](https://github.com/aicelen) for the contribution!
+- **Faster Segmentation model**
+
+### Changed
+
+- Removed dependency on **scipy**
+- Updated all other dependencies
+
+### Fixed
+
+- Error when running on small images.
+
+## [0.6.0]
+
+### Added
+
+- **Faster inference and GPU support**.
+  Big thanks again to [@aicelen](https://github.com/aicelen) for the contribution!
+- **Support for more symbols**
+
+### Changed
+
+- Grandstaff are now notated as single voice with two clefs in music xml
+
+## [0.5.0]
+
+### Added
+
+- Introduced **PyTorch-free inference**.
+  Big thanks to [@aicelen](https://github.com/aicelen) for the contribution!
+
+## [0.4.0]
+
+### Added
+
+- Support for **triplets**.
+
+## [0.3.0]
+
+### Changed
+
+- Removed dependency on **TensorFlow**.
+
+## [0.2.3]
+
+### Fixed
+
+- Development requirements were mistakenly included in production.
+
+## [0.2.2]
+
+### Fixed
+
+- File extensions like `.jpeg` were not handled correctly.
+
+## [0.2.1]
+
+### Added
+
+- Extended support for additional **time signatures**.
+
+## [0.2.0]
+
+### Improved
+
+- Detection quality: reduced the number of errors per symbol.
+
+## [0.1.0]
+
+### Added
+
+- Initial release.

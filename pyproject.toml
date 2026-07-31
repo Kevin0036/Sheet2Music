@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sheet2music"
+version = "0.1.0"
+description = "Local browser tool for one-at-a-time HOMR score conversion (PDF → MusicXML / MIDI / MP3)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0" }
+dependencies = [
+    # Web 服务
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    # 本工具核心
+    "miditoolkit",
+    # HOMR 推理（源码由 vendor/homr 或 HOMR_ROOT 提供；权重首次使用时在界面下载）
+    "numpy",
+    "opencv-python-headless",
+    "Pillow",
+    "musicxml",
+    "rapidocr",
+    "onnxruntime",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["httpx"]
+
+[project.scripts]
+sheet2music = "sheet2music.web.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sheet2music*"]
+
+[tool.setuptools.package-data]
+sheet2music = ["web/static/*"]
