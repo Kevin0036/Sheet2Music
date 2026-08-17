@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -100,6 +101,7 @@ def crop_page_vertically(
     target_path: Path,
     top_margin_spaces: float = 8.0,
     bottom_margin_spaces: float = 10.0,
+    geometry_path: Path | None = None,
 ) -> tuple[int, int]:
     """Write a vertically cropped page and return its ``(top, bottom)`` bounds."""
     image = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
@@ -112,7 +114,55 @@ def crop_page_vertically(
     )
     target_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(target_path), image[top:bottom, :])
+    if geometry_path is not None:
+        write_page_geometry(
+            geometry_path,
+            raw_width=image.shape[1],
+            raw_height=image.shape[0],
+            top=top,
+            bottom=bottom,
+        )
     return top, bottom
+
+
+def write_page_geometry(
+    geometry_path: Path,
+    raw_width: int,
+    raw_height: int,
+    top: int,
+    bottom: int,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "raw_size": {"width": raw_width, "height": raw_height},
+        "input_bounds_in_raw": [0, top, raw_width, bottom],
+        "input_size": {"width": raw_width, "height": bottom - top},
+    }
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def ensure_page_geometry(raw_page: Path, page: Path, geometry_path: Path) -> bool:
+    if geometry_path.exists():
+        return True
+    raw_image = cv2.imread(str(raw_page), cv2.IMREAD_COLOR)
+    input_image = cv2.imread(str(page), cv2.IMREAD_COLOR)
+    if raw_image is None or input_image is None:
+        return False
+
+    top, bottom = detect_music_vertical_bounds(raw_image)
+    if input_image.shape[:2] != (bottom - top, raw_image.shape[1]):
+        if input_image.shape[:2] != raw_image.shape[:2]:
+            return False
+        top, bottom = 0, raw_image.shape[0]
+    write_page_geometry(
+        geometry_path,
+        raw_width=raw_image.shape[1],
+        raw_height=raw_image.shape[0],
+        top=top,
+        bottom=bottom,
+    )
+    return True
 
 
 def export_numbered_pages(
@@ -125,6 +175,14 @@ def export_numbered_pages(
     pages_dir.mkdir(parents=True, exist_ok=True)
     existing = numbered_page_paths(pages_dir)
     if existing:
+        raw_pages_dir = pages_dir / "raw"
+        geometry_dir = pages_dir / "geometry"
+        for page in existing:
+            ensure_page_geometry(
+                raw_pages_dir / page.name,
+                page,
+                geometry_dir / f"{page.stem}.json",
+            )
         return existing
     raw_pages_dir = pages_dir / "raw"
     raw_pages_dir.mkdir(parents=True, exist_ok=True)
@@ -142,12 +200,24 @@ def export_numbered_pages(
     if not raw_pages:
         raise FileNotFoundError(f"No page images were exported from {pdf_path}")
     pages: list[Path] = []
+    geometry_dir = pages_dir / "geometry"
     for raw_page in raw_pages:
         page = pages_dir / raw_page.name
+        geometry_path = geometry_dir / f"{raw_page.stem}.json"
         if crop_vertical:
-            crop_page_vertically(raw_page, page)
+            crop_page_vertically(raw_page, page, geometry_path=geometry_path)
         else:
             shutil.copy2(raw_page, page)
+            image = cv2.imread(str(raw_page), cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError(f"无法读取页面图像: {raw_page}")
+            write_page_geometry(
+                geometry_path,
+                raw_width=image.shape[1],
+                raw_height=image.shape[0],
+                top=0,
+                bottom=image.shape[0],
+            )
         pages.append(page)
     return pages
 

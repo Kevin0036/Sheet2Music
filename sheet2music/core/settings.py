@@ -89,12 +89,60 @@ def musescore_binary() -> str:
     )
 
 
+def _windows_poppler_binary() -> str | None:
+    candidates = [Path(path) for path in _WINDOWS_KNOWN_PATHS["pdftoppm"]]
+    local_app_data = _local_app_data()
+    if local_app_data:
+        packages_dir = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+        candidates.extend(
+            sorted(
+                packages_dir.glob("*Poppler_*/poppler-*/Library/bin/pdftoppm.exe"),
+                reverse=True,
+            )
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _windows_ffmpeg_binary() -> str | None:
+    local_app_data = _local_app_data()
+    if not local_app_data:
+        return None
+    packages_dir = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    candidates = sorted(
+        packages_dir.glob("*FFmpeg_*/ffmpeg-*/bin/ffmpeg.exe"),
+        reverse=True,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _local_app_data() -> Path | None:
+    configured = os.environ.get("LOCALAPPDATA")
+    if configured:
+        return Path(configured)
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local"
+    return None
+
+
 def pdftoppm_binary() -> str:
-    return find_tool("pdftoppm", "pdftoppm")
+    windows_poppler = _windows_poppler_binary()
+    if windows_poppler is not None:
+        return windows_poppler
+    # Prefer a real executable over PATH shims such as pdftoppm.CMD.
+    return find_tool("pdftoppm", "pdftoppm.exe", "pdftoppm")
 
 
 def ffmpeg_binary() -> str:
-    return find_tool("ffmpeg", "ffmpeg")
+    windows_ffmpeg = _windows_ffmpeg_binary()
+    if windows_ffmpeg is not None:
+        return windows_ffmpeg
+    return find_tool("ffmpeg", "ffmpeg.exe", "ffmpeg")
 
 
 def work_dir() -> Path:

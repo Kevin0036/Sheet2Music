@@ -7,12 +7,32 @@ import os
 import shutil
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from sheet2music.core.convert import run_conversion
+from sheet2music.core import repair
+from sheet2music.core.convert import (
+    ConversionError,
+    run_conversion,
+    validate_musicxml_boundaries,
+)
 from sheet2music.core.models import ConvertParams
 from sheet2music.core.settings import homr_root, musescore_binary, pdftoppm_binary
 from sheet2music.core.workspace import JobWorkspace
+
+
+NAUTILUS_STRUCTURE_PLAN = {
+    "default_time_signature": "4/4",
+    "time_signature_changes": [
+        {"from_measure": 25, "to_measure": 25, "signature": "2/4"},
+        {"from_measure": 26, "signature": "4/4"},
+    ],
+    "clef_overrides": [
+        {"staff": 2, "from_measure": 14, "to_measure": 16, "sign": "G", "line": 2},
+        {"staff": 2, "from_measure": 17, "sign": "F", "line": 4},
+    ],
+    "key_signature": {"fifths": -5},
+}
 
 
 def _tools_available() -> bool:
@@ -39,6 +59,54 @@ def _sample_pdf() -> Path | None:
         if candidates:
             return candidates[0]
     return None
+
+
+class NautilusStructureFixtureTest(unittest.TestCase):
+    def test_structure_fixture_keeps_default_signature_compatible(self) -> None:
+        params = ConvertParams.validate(
+            80,
+            "4/4",
+            ["musicxml"],
+            structure_plan=NAUTILUS_STRUCTURE_PLAN,
+        )
+        self.assertEqual(params.time_signature, "4/4")
+        self.assertEqual(params.structure_plan["time_signature_changes"][0]["signature"], "2/4")
+
+    def test_unresolved_overflow_is_rejected_before_export(self) -> None:
+        root = ET.fromstring(
+            """
+            <score-partwise version="4.0">
+              <part id="P1">
+                <measure number="72">
+                  <attributes><divisions>4</divisions></attributes>
+                  <note><rest/><duration>20</duration><voice>1</voice></note>
+                </measure>
+              </part>
+            </score-partwise>
+            """
+        )
+
+        with self.assertRaisesRegex(ConversionError, "第 72 小节"):
+            validate_musicxml_boundaries(
+                root,
+                repair.ScoreStructurePlan.from_dict({}),
+            )
+
+    def test_underfilled_measure_passes_export_boundary_validation(self) -> None:
+        root = ET.fromstring(
+            """
+            <score-partwise version="4.0">
+              <part id="P1">
+                <measure number="1">
+                  <attributes><divisions>4</divisions></attributes>
+                  <note><rest/><duration>8</duration><voice>1</voice></note>
+                </measure>
+              </part>
+            </score-partwise>
+            """
+        )
+
+        validate_musicxml_boundaries(root, repair.ScoreStructurePlan.from_dict({}))
 
 
 @unittest.skipUnless(_tools_available() and _sample_pdf(), "缺少外部工具或样例 PDF")

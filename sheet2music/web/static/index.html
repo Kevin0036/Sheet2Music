@@ -82,6 +82,35 @@
         <div id="error-box" class="error" hidden></div>
       </div>
 
+      <div id="review-panel" class="card review-panel" hidden>
+        <div class="review-heading">
+          <div>
+            <h2>需要人工审查</h2>
+            <p id="review-summary" class="summary"></p>
+            <div id="review-changes" class="review-changes" hidden></div>
+          </div>
+          <span class="review-badge">高风险</span>
+        </div>
+        <section id="auto-review" class="auto-review" hidden>
+          <div id="auto-review-summary" class="auto-review-summary"></div>
+          <details id="auto-resolved-audit" class="auto-resolved-audit" hidden>
+            <summary>查看自动解决记录</summary>
+            <div id="auto-resolved-list" class="auto-resolved-list"></div>
+          </details>
+          <div id="auto-review-batches" class="auto-review-batches"></div>
+        </section>
+        <div id="review-bulk-actions" class="review-bulk-actions">
+          <button id="review-preserve-all-btn" class="secondary" type="button">批量保留可保留变化</button>
+          <button id="review-apply-suggestions-btn" class="secondary" type="button">一键采用可用修复</button>
+          <span id="review-selection-status" class="review-selection-status"></span>
+        </div>
+        <div id="review-findings" class="review-findings"></div>
+        <div class="review-footer">
+          <button id="approve-review-btn" class="primary" type="button" disabled>提交审批</button>
+          <span id="review-status" class="review-status"></span>
+        </div>
+      </div>
+
       <div id="results" class="card" hidden>
         <h2>转换结果</h2>
         <p id="summary" class="summary"></p>
@@ -91,6 +120,8 @@
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="review-state.js?v=6"></script>
+  <script src="job-session.js"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

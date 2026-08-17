@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
@@ -12,6 +13,7 @@ VALID_OUTPUT_FORMATS = ("musicxml", "midi", "mp3", "zip")
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_REVIEW = "awaiting_review"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -60,6 +62,7 @@ class ConvertParams:
     time_signature: str = "4/4"
     outputs: list[str] = field(default_factory=list)
     use_gpu: bool = False
+    structure_plan: dict[str, object] | None = None
 
     @classmethod
     def validate(
@@ -68,17 +71,34 @@ class ConvertParams:
         time_signature: object,
         outputs: object,
         use_gpu: object = False,
+        structure_plan: object = None,
     ) -> "ConvertParams":
         validated_bpm = validate_bpm(bpm)
         parse_time_signature(str(time_signature))
         validated_outputs = validate_outputs(outputs)
         if not isinstance(use_gpu, bool):
             raise ValidationError(f"use_gpu 必须是布尔值，收到: {use_gpu!r}")
+        validated_structure_plan: dict[str, object] | None = None
+        if structure_plan is not None:
+            if not isinstance(structure_plan, Mapping):
+                raise ValidationError("structure_plan must be an object")
+            from .structure import ScoreStructurePlan
+
+            try:
+                ScoreStructurePlan.from_dict(
+                    structure_plan,
+                    fallback_time_signature=str(time_signature),
+                )
+            except ValueError as exc:
+                raise ValidationError(f"invalid structure_plan: {exc}") from exc
+            validated_structure_plan = dict(structure_plan)
+
         return cls(
             bpm=validated_bpm,
             time_signature=str(time_signature),
             outputs=validated_outputs,
             use_gpu=use_gpu,
+            structure_plan=validated_structure_plan,
         )
 
     def to_dict(self) -> dict[str, object]:

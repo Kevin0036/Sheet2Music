@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 
-from .settings import find_tool, homr_root
+from .settings import ffmpeg_binary, find_tool, homr_root, pdftoppm_binary
 
 #: HOMR 官方权重下载地址（与 homr/download_utils.py 一致）。
 _BASE_URL = "https://github.com/liebharc/homr/releases/download/onnx_checkpoints/"
@@ -157,7 +157,13 @@ def system_status() -> dict[str, object]:
     binaries: list[dict[str, object]] = []
     for name, candidates in _BINARY_CHECKS:
         try:
-            resolved = find_tool(name, *candidates)
+            resolved = (
+                pdftoppm_binary()
+                if name == "pdftoppm"
+                else ffmpeg_binary()
+                if name == "ffmpeg"
+                else find_tool(name, *candidates)
+            )
             binaries.append({"name": name, "ok": True, "path": resolved, "hint": None})
         except FileNotFoundError:
             binaries.append({"name": name, "ok": False, "path": None, "hint": _install_hint(name)})
