@@ -8,10 +8,12 @@ import numpy as np
 
 from sheet2music.core.layout import (
     CoordinateTransform,
+    annotate_page_layout_with_printed_numbers,
     crop_system_from_raw_page,
     group_overflow_findings,
     load_page_layout,
 )
+from sheet2music.core.measure_numbers import MeasureNumberAnchor
 
 
 def write_json(path: Path, payload: dict[str, object]) -> Path:
@@ -128,6 +130,48 @@ class PageLayoutTest(unittest.TestCase):
             )
 
         self.assertEqual(page.systems[0].mapping_confidence, "ambiguous")
+
+    def test_number_anchor_maps_printed_measure_without_changing_target_ordinal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = layout_payload()
+            payload["systems"][0]["display_measure_start"] = 1
+            payload["systems"][0]["display_measure_end"] = 1
+            payload["systems"][0]["number_mapping_confidence"] = "high"
+            page = load_page_layout(
+                write_json(root / "layout.json", payload),
+                write_json(root / "geometry.json", geometry_payload()),
+                page_number=2,
+                measure_offset=12,
+            )
+
+        self.assertEqual(page.systems[0].global_measure_start, 13)
+        self.assertEqual(page.systems[0].display_measure_start, 1)
+        self.assertEqual(page.systems[0].number_mapping_confidence, "high")
+
+    def test_ocr_row_anchors_add_display_numbers_but_keep_ordinals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            page = load_page_layout(
+                write_json(root / "layout.json", layout_payload()),
+                write_json(root / "geometry.json", geometry_payload()),
+                page_number=2,
+                measure_offset=12,
+            )
+            raw_path = root / "raw.png"
+            cv2.imwrite(str(raw_path), np.zeros((1200, 1000, 3), dtype=np.uint8))
+
+            numbers = iter(("12", "14"))
+
+            def reader(_crop):
+                return {"txts": [next(numbers)], "scores": [0.95]}
+
+            enriched = annotate_page_layout_with_printed_numbers(page, raw_path, reader)
+
+        self.assertEqual(enriched.systems[0].global_measure_start, 13)
+        self.assertEqual(enriched.systems[0].display_measure_start, 12)
+        self.assertEqual(enriched.systems[0].display_measure_end, 13)
+        self.assertEqual(enriched.systems[0].number_mapping_confidence, "high")
 
     def test_ambiguous_layout_accepts_missing_measure_notehead_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

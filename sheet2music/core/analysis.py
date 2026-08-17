@@ -31,6 +31,9 @@ class ReviewFinding:
     offset_units: int = 0
     offset_beats: str = "0"
     hand_region: str | None = None
+    measure_ordinal: int | None = None
+    display_measure_number: int | None = None
+    number_mapping_confidence: str = "unknown"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -459,6 +462,8 @@ def _finding(
     offset_units: int = 0,
     offset_beats: str = "0",
     hand_region: str | None = None,
+    display_measure_number: int | None = None,
+    number_mapping_confidence: str = "unknown",
 ) -> ReviewFinding:
     staff_key = staff if staff is not None else "-"
     offset_key = f":u{offset_units}" if offset_units else ""
@@ -483,6 +488,9 @@ def _finding(
         offset_units=offset_units,
         offset_beats=offset_beats,
         hand_region=hand_region,
+        measure_ordinal=measure_start,
+        display_measure_number=display_measure_number,
+        number_mapping_confidence=number_mapping_confidence,
     )
 
 

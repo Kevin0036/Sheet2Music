@@ -10,6 +10,9 @@ from statistics import median
 from typing import Mapping, Sequence
 
 import cv2
+from dataclasses import replace
+
+from .measure_numbers import MeasureNumberAnchor, build_number_mapping, recognize_row_anchor
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,9 @@ class ScoreSystem:
     global_measure_end: int
     notehead_counts: tuple[int, ...]
     mapping_confidence: str
+    display_measure_start: int | None = None
+    display_measure_end: int | None = None
+    number_mapping_confidence: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,64 @@ class SystemCrop:
     source_path: Path
     output_path: Path
     raw_bbox: tuple[int, int, int, int]
+
+
+def annotate_page_layout_with_printed_numbers(
+    page: PageLayout,
+    raw_page_path: Path,
+    reader,
+) -> PageLayout:
+    """Attach printed row numbers when OCR can establish one consistent offset."""
+    image = cv2.imread(str(raw_page_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"cannot read raw page image: {raw_page_path}")
+    anchors: list[MeasureNumberAnchor] = []
+    for system in page.systems:
+        if system.global_measure_start <= 0:
+            continue
+        left, top, _, _ = page.transform.recognition_bbox_to_raw(system.bbox)
+        staff_height = max((staff[3] - staff[1] for staff in system.staff_bboxes), default=40)
+        anchor = recognize_row_anchor(
+            image,
+            system_index=system.system_index,
+            measure_ordinal=system.global_measure_start,
+            bbox=(left - 3 * staff_height, top - 2 * staff_height, left + staff_height, top + staff_height),
+            reader=reader,
+        )
+        if anchor is not None:
+            anchors.append(anchor)
+    if not anchors:
+        return page
+    ordinal_start = min(system.global_measure_start for system in page.systems)
+    ordinal_end = max(system.global_measure_end for system in page.systems)
+    try:
+        mapping = build_number_mapping(
+            anchors,
+            ordinal_start=ordinal_start,
+            ordinal_end=ordinal_end,
+        )
+    except ValueError:
+        return page
+    return replace(
+        page,
+        systems=tuple(
+            replace(
+                system,
+                display_measure_start=mapping.display_for_ordinal(system.global_measure_start),
+                display_measure_end=mapping.display_for_ordinal(system.global_measure_end),
+                number_mapping_confidence=mapping.confidence,
+            )
+            for system in page.systems
+        ),
+    )
+
+
+def build_measure_number_reader():
+    """Create the optional RapidOCR reader lazily so normal imports stay cheap."""
+    from rapidocr import RapidOCR
+
+    engine = RapidOCR()
+    return engine
 
 
 def load_page_layout(
@@ -156,6 +220,19 @@ def load_page_layout(
                     )
                 ),
                 mapping_confidence=mapping_confidence,
+                display_measure_start=(
+                    int(item["display_measure_start"])
+                    if isinstance(item.get("display_measure_start"), int)
+                    else None
+                ),
+                display_measure_end=(
+                    int(item["display_measure_end"])
+                    if isinstance(item.get("display_measure_end"), int)
+                    else None
+                ),
+                number_mapping_confidence=str(
+                    item.get("number_mapping_confidence", "unknown")
+                ),
             )
         )
     return PageLayout(page_number=page_number, transform=transform, systems=tuple(systems))

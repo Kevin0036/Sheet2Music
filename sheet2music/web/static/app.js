@@ -356,8 +356,25 @@ function formatFindingKind(kind) {
   return FINDING_KIND_LABELS[kind] || "结构信息需要确认";
 }
 
-function formatMeasureRange(start, end) {
+function formatMeasureRange(start, end, displayStart, displayEnd, mappingConfidence) {
   if (start == null || end == null) return "全谱小节范围未提供";
+  const hasDisplay = mappingConfidence === "high"
+    && displayStart != null
+    && displayEnd != null;
+  if (hasDisplay) {
+    const printed = displayStart === displayEnd
+      ? `印刷第 ${displayStart} 小节`
+      : `印刷第 ${displayStart} 至第 ${displayEnd} 小节`;
+    const ordinal = start === end
+      ? `内部序号 ${start}`
+      : `内部序号 ${start} 至 ${end}`;
+    return `${printed}（${ordinal}）`;
+  }
+  if (mappingConfidence === "unknown") {
+    return start === end
+      ? `内部序号 ${start} 小节`
+      : `内部序号 ${start} 至 ${end} 小节`;
+  }
   return start === end ? `全谱第 ${start} 小节` : `全谱第 ${start} 至第 ${end} 小节`;
 }
 
@@ -378,7 +395,13 @@ function formatFindingLocation(finding, pages) {
   if (finding.measure_start === finding.measure_end && finding.offset_beats != null) {
     parts.push(formatBeatLocation(finding));
   } else {
-    parts.push(formatMeasureRange(finding.measure_start, finding.measure_end));
+    parts.push(formatMeasureRange(
+      finding.measure_start,
+      finding.measure_end,
+      finding.display_measure_number,
+      finding.display_measure_number,
+      finding.number_mapping_confidence,
+    ));
   }
   parts.push(formatStaffRegion(finding.staff, finding.observed));
   return parts.join("；");

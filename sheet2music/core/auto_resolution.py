@@ -21,6 +21,8 @@ from .homr import run_homr_on_page
 from .layout import (
     PageLayout,
     ScoreSystem,
+    annotate_page_layout_with_printed_numbers,
+    build_measure_number_reader,
     crop_system_from_raw_page,
     group_overflow_findings,
     load_page_layout,
@@ -598,12 +600,26 @@ def resolve_timing_overflows(
     use_gpu: bool,
     progress: Callable[..., None] | None = None,
     debug: bool = False,
+    enable_measure_number_ocr: bool = True,
 ) -> AutoResolutionOutcome:
     """Resolve grouped timing overflows using retained page images and sidecars."""
     findings = analysis.get("findings", [])
     if not isinstance(findings, list):
         findings = []
     layouts = _load_score_layouts(workspace, page_layouts, page_measure_offsets)
+    if enable_measure_number_ocr:
+        try:
+            reader = build_measure_number_reader()
+            layouts = tuple(
+                annotate_page_layout_with_printed_numbers(
+                    page,
+                    workspace.pages_dir / "raw" / f"page-{page.page_number}.png",
+                    reader,
+                )
+                for page in layouts
+            )
+        except Exception:  # noqa: BLE001 - OCR is advisory; ordinal safety remains intact
+            pass
     specs = group_overflow_findings(
         [item for item in findings if isinstance(item, Mapping)],
         layouts,
