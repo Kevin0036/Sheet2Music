@@ -1,13 +1,20 @@
 """pages.py 单元测试（无需 pdftoppm）。"""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
 
-from sheet2music.core.pages import detect_music_vertical_bounds, numbered_page_paths
+from sheet2music.core.pages import (
+    crop_page_vertically,
+    detect_music_vertical_bounds,
+    export_numbered_pages,
+    numbered_page_paths,
+)
 
 
 class NumberedPagePathsTest(unittest.TestCase):
@@ -45,6 +52,49 @@ class MusicCropTest(unittest.TestCase):
         image = np.full((100, 160, 3), 255, dtype=np.uint8)
 
         self.assertEqual(detect_music_vertical_bounds(image), (0, 100))
+
+    def test_crop_page_writes_geometry_for_mapping_back_to_raw_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "raw.png"
+            target = root / "page.png"
+            geometry = root / "page.json"
+            image = np.full((100, 80, 3), 255, dtype=np.uint8)
+            cv2.imwrite(str(source), image)
+
+            with mock.patch(
+                "sheet2music.core.pages.detect_music_vertical_bounds",
+                return_value=(10, 90),
+            ):
+                crop_page_vertically(source, target, geometry_path=geometry)
+
+            self.assertEqual(
+                json.loads(geometry.read_text(encoding="utf-8")),
+                {
+                    "schema_version": 1,
+                    "raw_size": {"width": 80, "height": 100},
+                    "input_bounds_in_raw": [0, 10, 80, 90],
+                    "input_size": {"width": 80, "height": 80},
+                },
+            )
+
+    def test_existing_pages_rebuild_missing_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pages_dir = Path(temp_dir)
+            raw_dir = pages_dir / "raw"
+            raw_dir.mkdir()
+            raw = np.full((100, 80, 3), 255, dtype=np.uint8)
+            cv2.imwrite(str(raw_dir / "page-1.png"), raw)
+            cv2.imwrite(str(pages_dir / "page-1.png"), raw[10:90, :])
+
+            with mock.patch(
+                "sheet2music.core.pages.detect_music_vertical_bounds",
+                return_value=(10, 90),
+            ):
+                paths = export_numbered_pages(Path("unused.pdf"), pages_dir)
+
+            self.assertEqual(paths, [pages_dir / "page-1.png"])
+            self.assertTrue((pages_dir / "geometry" / "page-1.json").exists())
 
 
 if __name__ == "__main__":

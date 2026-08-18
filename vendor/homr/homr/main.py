@@ -6,13 +6,14 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 
 from homr import color_adjust, download_utils
-from homr.autocrop import autocrop
+from homr.autocrop import autocrop_with_bounds
 from homr.bar_line_detection import (
     detect_bar_lines,
     prepare_bar_line_image,
@@ -28,6 +29,7 @@ from homr.brace_dot_detection import (
     prepare_brace_dot_image,
 )
 from homr.debug import Debug
+from homr.layout import build_page_layout
 from homr.model import InputPredictions, MultiStaff
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.noise_filtering import filter_predictions
@@ -106,13 +108,19 @@ def replace_extension(path: str, new_extension: str) -> str:
 
 def load_and_preprocess_predictions(
     image_path: str, enable_debug: bool, enable_cache: bool, segnet_use_gpu: bool
-) -> tuple[InputPredictions, Debug]:
+) -> tuple[
+    InputPredictions,
+    Debug,
+    tuple[int, int],
+    tuple[int, int, int, int],
+]:
     image = cv2.imread(image_path)
     if image is None:
         raise InvalidProgramArgumentException(
             "The file format is not supported, please provide a JPG or PNG image file:" + image_path
         )
-    image = autocrop(image)
+    source_size = (image.shape[1], image.shape[0])
+    image, autocrop_bounds = autocrop_with_bounds(image)
     image = resize_image(image)
     preprocessed = color_adjust.apply_clahe(image)
     predictions = get_predictions(image, preprocessed, image_path, enable_cache, segnet_use_gpu)
@@ -127,7 +135,7 @@ def load_and_preprocess_predictions(
     debug.write_threshold_image("stems_rest", predictions.stems_rest)
     debug.write_threshold_image("notehead", predictions.notehead)
     debug.write_threshold_image("clefs_keys", predictions.clefs_keys)
-    return predictions, debug
+    return predictions, debug, source_size, autocrop_bounds
 
 
 def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSymbols:
@@ -167,6 +175,7 @@ class ProcessingConfig:
     # Opt-in (--coreml-encoder): run the encoder on the Apple GPU via CoreML.
     # Only helps across many images (slow one-time MLProgram compile).
     coreml_encoder: bool
+    layout_output: str | None
 
 
 def process_image(
@@ -177,11 +186,14 @@ def process_image(
     eprint("Processing " + image_path)
     xml_file = replace_extension(image_path, ".musicxml")
     debug_cleanup: Debug | None = None
+    detected_barlines: list[RotatedBoundingBox] = []
     try:
         if config.read_staff_positions:
             image = cv2.imread(image_path)
             if image is None:
                 raise ValueError("Failed to read " + image_path)
+            source_size = (image.shape[1], image.shape[0])
+            autocrop_bounds = (0, 0, image.shape[1], image.shape[0])
             image = resize_image(image)
             debug = Debug(image, image_path, config.enable_debug)
             staff_position_files = replace_extension(image_path, ".txt")
@@ -195,7 +207,16 @@ def process_image(
             # two code paths feed the symbol-recognition encoder consistent input.
             image = color_adjust.apply_clahe(image)
         else:
-            multi_staffs, image, debug, title_future, _ = detect_staffs_in_image(image_path, config)
+            (
+                multi_staffs,
+                image,
+                debug,
+                title_future,
+                _,
+                source_size,
+                autocrop_bounds,
+                detected_barlines,
+            ) = detect_staffs_in_image(image_path, config)
         debug_cleanup = debug
 
         transformer_config = Config()
@@ -217,6 +238,16 @@ def process_image(
         eprint("Writing XML", result_staffs)
         xml = generate_xml(xml_generator_args, result_staffs, title)
         ET.ElementTree(xml).write(xml_file, encoding="unicode", xml_declaration=True)
+        if config.layout_output:
+            layout = build_page_layout(
+                multi_staffs,
+                xml,
+                source_size=source_size,
+                autocrop_bounds=autocrop_bounds,
+                recognition_size=(image.shape[1], image.shape[0]),
+                detected_barlines=detected_barlines,
+            )
+            layout.write(Path(config.layout_output))
 
         eprint("Finished parsing " + str(len(result_staffs)) + " staves")
         teaser_file = replace_extension(image_path, "_teaser.png")
@@ -238,8 +269,17 @@ def process_image(
 
 def detect_staffs_in_image(
     image_path: str, config: ProcessingConfig
-) -> tuple[list[MultiStaff], NDArray, Debug, Future[str], int]:
-    predictions, debug = load_and_preprocess_predictions(
+) -> tuple[
+    list[MultiStaff],
+    NDArray,
+    Debug,
+    Future[str],
+    int,
+    tuple[int, int],
+    tuple[int, int, int, int],
+    list[RotatedBoundingBox],
+]:
+    predictions, debug, source_size, autocrop_bounds = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
     )
     symbols = predict_symbols(debug, predictions)
@@ -300,7 +340,16 @@ def detect_staffs_in_image(
 
     debug.write_all_bounding_boxes_alternating_colors("notes", multi_staffs, notes)
 
-    return multi_staffs, predictions.preprocessed, debug, title_future, len(staffs)
+    return (
+        multi_staffs,
+        predictions.preprocessed,
+        debug,
+        title_future,
+        len(staffs),
+        source_size,
+        autocrop_bounds,
+        bar_line_boxes,
+    )
 
 
 def get_all_image_files_in_folder(folder: str) -> list[str]:
@@ -396,6 +445,11 @@ def main() -> None:
         + " of running the built-in staff detection.",
     )
     parser.add_argument(
+        "--layout-output",
+        type=str,
+        help="Writes detected systems, barlines, note evidence and image transforms to JSON.",
+    )
+    parser.add_argument(
         "--gpu",
         type=GpuSupport,
         choices=list(GpuSupport),
@@ -439,6 +493,7 @@ def main() -> None:
         transformer_use_gpu,
         segnet_use_gpu,
         coreml_encoder,
+        args.layout_output,
     )
 
     xml_generator_args = XmlGeneratorArguments(

@@ -33,12 +33,15 @@ def build_homr_command(
     debug: bool = False,
     tempo_bpm: int | None = None,
     use_gpu: bool = False,
+    layout_output: Path | None = None,
 ) -> list[str]:
     command = [sys.executable, "-m", "homr.main", "--gpu", "auto" if use_gpu else "no"]
     if debug:
         command.append("--debug")
     if tempo_bpm is not None:
         command.extend(["--output-metronome", str(tempo_bpm), "--output-tempo", str(tempo_bpm)])
+    if layout_output is not None:
+        command.extend(["--layout-output", str(layout_output)])
     command.append(str(image))
     return command
 
@@ -54,6 +57,7 @@ def run_homr_on_page(
     debug: bool = False,
     tempo_bpm: int | None = None,
     use_gpu: bool = False,
+    layout_output: Path | None = None,
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
     staged_image = work_dir / image.name
@@ -64,6 +68,7 @@ def run_homr_on_page(
         debug=debug,
         tempo_bpm=tempo_bpm,
         use_gpu=use_gpu,
+        layout_output=layout_output,
     )
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH")
@@ -83,4 +88,6 @@ def run_homr_on_page(
     page_xml = staged_image.with_suffix(".musicxml")
     if not page_xml.exists():
         raise HomrPageError(staged_image.name, "HOMR 未生成 page.musicxml 输出")
+    if layout_output is not None and not layout_output.exists():
+        raise HomrPageError(staged_image.name, "HOMR 未生成布局 JSON 输出")
     return page_xml

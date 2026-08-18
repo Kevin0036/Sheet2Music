@@ -4,7 +4,7 @@ import numpy as np
 from homr.type_definitions import NDArray
 
 
-def autocrop(img: NDArray) -> NDArray:
+def autocrop_with_bounds(img: NDArray) -> tuple[NDArray, tuple[int, int, int, int]]:
     """
     Find the largest contour on the image, which is expected to be the paper of sheet music
     and extracts it from the image. If no contour is found, then the image is assumed to be
@@ -37,7 +37,7 @@ def autocrop(img: NDArray) -> NDArray:
             big_contour = c
 
     if big_contour is None:
-        return img
+        return img, (0, 0, img.shape[1], img.shape[0])
 
     # get bounding box
     x, y, w, h = cv2.boundingRect(big_contour)  # type: ignore
@@ -46,8 +46,12 @@ def autocrop(img: NDArray) -> NDArray:
     # If we can't find a large contour, then we assume that the picture doesn't have page borders
     is_full_page_view = x < page_width * 0.25 or y < page_height * 0.25
     if is_full_page_view:
-        return img
+        return img, (0, 0, page_width, page_height)
 
     # crop result
     result = img[y : y + h, x : x + w]
-    return result
+    return result, (x, y, x + w, y + h)
+
+
+def autocrop(img: NDArray) -> NDArray:
+    return autocrop_with_bounds(img)[0]

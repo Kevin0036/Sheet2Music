@@ -16,6 +16,14 @@ class JobWorkspaceTest(unittest.TestCase):
             self.assertTrue(workspace.fixed_page_xml_dir.is_dir())
             self.assertTrue(workspace.output_dir.is_dir())
             self.assertTrue(workspace.homr_work_dir.is_dir())
+            self.assertTrue(workspace.region_upload_dir.is_dir())
+            self.assertTrue(workspace.region_raw_xml_dir.is_dir())
+            self.assertTrue(workspace.region_merged_xml_dir.is_dir())
+            self.assertTrue(workspace.layout_dir.is_dir())
+            self.assertTrue(workspace.page_geometry_dir.is_dir())
+            self.assertTrue(workspace.auto_resolution_crop_dir.is_dir())
+            self.assertTrue(workspace.auto_resolution_candidate_dir.is_dir())
+            self.assertTrue(workspace.auto_resolution_validation_dir.is_dir())
 
     def test_artifacts_collection_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

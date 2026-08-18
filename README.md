@@ -3,10 +3,10 @@
 把钢琴谱 PDF 转成 `MusicXML` / `MIDI` / `MP3` 的本地浏览器工具。  
 它以最新的 [HOMR](https://github.com/liebharc/homr) 为识别引擎，再做一层保守修复：
 
-- 固定整谱拍号，默认 `4/4`
+- 默认整谱拍号为 `4/4`；检测到拍号变化时先进入人工审批，不会按出现频率过滤
 - 固定整谱 BPM
-- 只修 `time` / `backup` / MIDI 元数据，不挪动音符到下一小节
-- 归一化后来又恢复的短暂错误调号与谱号，不猜测或改写音符音高
+- 按 `staff + voice` 修复安全的 `time` / `backup` / MIDI 元数据，不挪动音符到下一小节
+- 保留 raw MusicXML；高风险 timing、拍号或谱号疑点在浏览器中审批后才导出最终 MIDI/MP3
 - 识别前用 600 DPI 渲染 PDF，并按五线谱间距裁掉上下标题/页脚空白
 
 设计文档见 [docs/design.md](docs/design.md)。
@@ -57,7 +57,7 @@ sheet2music
 - [ffmpeg](https://www.gyan.dev/ffmpeg/builds/)
 - [poppler for Windows](https://github.com/oschwartz10612/poppler-windows)（提供 `pdftoppm`）
 
-代码里已经做了 Windows 常见安装目录兜底探测，但我目前没有在 Windows 真机上做实跑，只完成了代码级兼容性检查。
+代码里已经做了 Windows 常见安装目录兜底探测，并已在 Windows RTX 4060 环境完成真实 GPU 流程验证：`TensorRTExecutionProvider`、`CUDAExecutionProvider` 和 `CPUExecutionProvider` 均可用，FP16 权重已加载。
 
 ## HOMR 源码与权重
 
@@ -91,6 +91,12 @@ HOMR 的源码和模型权重分别遵循其上游许可证与分发规则；发
 - 某页 HOMR 失败时跳过该页并继续整谱
 - 同一页面可立即继续上传下一份谱子
 
+## 结构审批
+
+转换先生成 raw MusicXML 和分析报告。出现拍号变化、谱号变化、声部越过小节边界、负游标或音符重叠等高风险 finding 时，任务会进入 `awaiting_review`，最终 MIDI/MP3 在审批前不会生成。
+
+每个 finding 支持三种处理：保留谱面变化、采用修复建议，或上传指定小节范围的放大图进行区域二次识别。区域识别会按 `part id` 和全谱小节范围替换 XML，保留范围外内容，并在再次审批后才最终导出。
+
 ## 当前命名
 
 - 仓库目录：`Sheet2Music/`
@@ -112,19 +118,17 @@ HOMR 的源码和模型权重分别遵循其上游许可证与分发规则；发
 1. `pdftoppm` 以 600 DPI 把 PDF 逐页导出为高分辨率原图
 2. 根据连续五条长水平线估计五线谱范围，上下保留安全边距后生成 HOMR 输入图
 3. 逐页调用 HOMR：未勾选 GPU 使用 `--gpu no`，勾选 GPU 使用 `--gpu auto`。
-4. 对每页 MusicXML 做保守修复：固定目标拍号和 BPM，并清理后来恢复的短暂调号/谱号错误
-5. 合并整谱，再修一次总谱 MusicXML
-6. 用 MuseScore 导出 MIDI
-7. 对 MIDI 统一拍号 / tempo 元数据
-8. 按需渲染 MP3，并输出 `report.json`
+4. 保留 raw MusicXML，同时生成候选页级修复 XML
+5. 合并 raw 全谱并运行结构预分析；候选修复不能覆盖未经确认的拍号/谱号变化
+6. 无高风险 finding 时自动继续；有高风险 finding 时进入浏览器审批
+7. 审批决定或区域二次识别完成后，按最终结构计划修复全谱 MusicXML
+8. 用 MuseScore 导出 MIDI，按结构计划写入拍号 / tempo 元数据
+9. 通过验证后按需渲染 MP3，并输出 `report.json`
 
 任务目录中的 `pages/raw/` 保留 600 DPI 原图，`pages/page-N.png` 是实际送入
 HOMR 的裁剪图。如果页面布局无法可靠检测出五线谱，工具会保留整页，不进行激进裁剪。
 
-修复脚本的边界是结构性元数据：如果一个调号或谱号偏离本 part/staff 的首个基线，
-但之后又恢复到该基线，才会把这段短暂变化归一化；持续到末尾的变化会保留。
-这样可以处理 HOMR 将整首 `5` 个升号短暂识别为 `0`、或把高音谱号短暂识别为低音谱号的情况，
-但不会凭空转置已经写入 XML 的 `<pitch>`。
+修复脚本只在结构计划或审批决定支持时改变拍号、谱号和调号元数据；不会凭空转置已经写入 XML 的 `<pitch>`。
 
 ## 测试
 
