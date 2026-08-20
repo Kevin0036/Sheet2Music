@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <h1>Sheet2Music</h1>
-    <p class="subtitle">PDF → MusicXML / MIDI / MP3 · 本地乐谱转换工作台</p>
+      <p class="subtitle">PDF / MP3 → MIDI / MP3 · 本地音乐转换工作台</p>
   </header>
 
   <section id="system-panel" class="card system-panel">
@@ -34,10 +34,15 @@
 
   <main class="layout">
     <section class="left">
-      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="上传 PDF">
-        <p class="dz-title">把 PDF 拖到这里，或点击选择文件</p>
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="上传 PDF 或 MP3">
+        <p class="dz-title">把 PDF 或 MP3 拖到这里，或点击选择文件</p>
         <button id="pick-file" type="button">选择文件</button>
-        <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />
+        <input id="file-input" type="file" accept="application/pdf,.pdf,audio/mpeg,.mp3" hidden />
+        <div class="url-upload">
+          <label for="video-url">或粘贴 YouTube / Bilibili 视频 URL</label>
+          <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+          <button id="submit-video-url" type="button">使用视频音频</button>
+        </div>
       </div>
 
       <div id="preview-area" class="card preview-area" hidden>
@@ -51,7 +56,7 @@
       <div id="params-card" class="card">
         <h2>转换参数</h2>
 
-        <label for="bpm">BPM <em>（必填，正整数）</em></label>
+        <label for="bpm">BPM <em id="bpm-hint">（PDF 必填；MP3 由 Beat This 检测）</em></label>
         <input id="bpm" type="number" min="1" step="1" placeholder="例如 120" disabled />
 
         <label for="time-signature">拍号</label>
@@ -59,7 +64,18 @@
 
         <label class="checkbox gpu-option">
           <input id="use-gpu" type="checkbox" disabled />
-          使用 GPU 加速（自动检测，不可用时回退 CPU）
+          使用 GPU 加速（要求 CUDA 会话可用）
+        </label>
+
+        <label for="transkun-model">Transkun 模型</label>
+        <select id="transkun-model" disabled>
+          <option value="v2" selected>Transkun V2（参考兼容，默认）</option>
+          <option value="v2_aug">Transkun V2 Aug</option>
+        </select>
+
+        <label class="checkbox">
+          <input id="has-pickup-measure" type="checkbox" disabled />
+          开头有弱起小节（印刷编号从后续小节开始）
         </label>
 
         <fieldset id="outputs" disabled>
@@ -102,6 +118,7 @@
         <div id="review-bulk-actions" class="review-bulk-actions">
           <button id="review-preserve-all-btn" class="secondary" type="button">批量保留可保留变化</button>
           <button id="review-apply-suggestions-btn" class="secondary" type="button">一键采用可用修复</button>
+          <button id="review-ignore-all-btn" class="secondary" type="button">一键忽略全部疑点</button>
           <span id="review-selection-status" class="review-selection-status"></span>
         </div>
         <div id="review-findings" class="review-findings"></div>
@@ -120,8 +137,8 @@
     </section>
   </main>
 
-  <script src="review-state.js?v=6"></script>
+  <script src="review-state.js?v=7"></script>
   <script src="job-session.js"></script>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from .settings import ffmpeg_binary, musescore_binary
+from .fluidsynth_renderer import render_midi_to_mp3
 
 
 def _musescore_env() -> dict[str, str]:
@@ -73,8 +74,6 @@ def transcode_mp3(wav_path: Path, mp3_path: Path) -> None:
 
 
 def render_mp3(input_score: Path, mp3_path: Path) -> Path:
-    """渲染 MP3：MuseScore 出 wav，再 ffmpeg 转 mp3。"""
-    wav_path = mp3_path.with_suffix(".wav")
-    render_wav(input_score, wav_path)
-    transcode_mp3(wav_path, mp3_path)
+    """Render a MIDI file with the shared FluidSynth playback pipeline."""
+    render_midi_to_mp3(input_score, mp3_path)
     return mp3_path

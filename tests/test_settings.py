@@ -61,6 +61,10 @@ class PdftoppmBinaryTest(unittest.TestCase):
 
 
 class FfmpegBinaryTest(unittest.TestCase):
+    def test_explicit_ffmpeg_environment_override_wins(self) -> None:
+        with mock.patch.dict(os.environ, {"SHEET2MUSIC_FFMPEG": r"C:\tools\ffmpeg.exe"}):
+            self.assertEqual(settings.ffmpeg_binary(), r"C:\tools\ffmpeg.exe")
+
     def test_prefers_winget_ffmpeg(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             local_app_data = Path(temp_dir)
@@ -80,6 +84,26 @@ class FfmpegBinaryTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}):
                 with mock.patch.object(settings.shutil, "which", return_value=None):
                     self.assertEqual(settings.ffmpeg_binary(), str(binary))
+
+
+class TranskunModelSettingsTest(unittest.TestCase):
+    def test_default_v2_uses_reference_packaged_model(self) -> None:
+        weight, conf = settings.transkun_model_files("v2")
+
+        self.assertEqual(weight, settings.transkun_root() / "transkun" / "pretrained" / "2.0.pt")
+        self.assertEqual(conf, settings.transkun_root() / "transkun" / "pretrained" / "2.0.conf")
+
+    def test_model_identity_check_rejects_wrong_weight_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            weight = Path(temp_dir) / "weight.pt"
+            weight.write_bytes(b"not-the-reference-model")
+            with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+                settings.validate_file_identity(
+                    weight,
+                    expected_size=weight.stat().st_size,
+                    expected_sha256="0" * 64,
+                    label="Transkun V2 weight",
+                )
 
     def test_falls_back_to_home_appdata_without_localappdata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

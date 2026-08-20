@@ -19,6 +19,7 @@ from ..core.models import ConvertParams, ValidationError
 from ..core.pages import extract_first_page_preview
 from ..core.reidentify import MAX_REGION_UPLOAD_BYTES
 from ..core.settings import host, port, work_dir
+from ..core.video_audio import validate_video_url
 from .jobs import AutoResolutionConflict, JobStore, ReviewError
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -26,10 +27,12 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 class ConvertRequest(BaseModel):
     job_id: str
-    bpm: int
+    bpm: int | None = None
     time_signature: str = "4/4"
     outputs: list[str] = Field(default_factory=list)
     use_gpu: bool = False
+    transkun_model: str = "v2"
+    has_pickup_measure: bool = False
 
 
 class ReviewRequest(BaseModel):
@@ -77,18 +80,64 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
     }
 
 
+@app.post("/api/audio")
+async def upload_audio(file: UploadFile = File(...)) -> dict[str, object]:
+    filename = file.filename or "audio.mp3"
+    if not filename.lower().endswith(".mp3"):
+        raise HTTPException(status_code=400, detail="只支持 MP3 文件")
+    record = store.create(filename, input_kind="audio")
+    try:
+        written = 0
+        with record.workspace.audio_path.open("wb") as target:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="MP3 超过 50MB 限制")
+                target.write(chunk)
+    except HTTPException:
+        store.reset(record.job_id)
+        raise
+    except Exception as exc:
+        store.reset(record.job_id)
+        raise HTTPException(status_code=400, detail=f"音频上传失败: {exc}") from exc
+    record.stage = "audio_uploaded"
+    store.save(record)
+    return {"job_id": record.job_id, "filename": filename, "input_kind": "audio"}
+
+
+class VideoUrlRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/video-url")
+def upload_video_url(request: VideoUrlRequest) -> dict[str, object]:
+    try:
+        url = validate_video_url(request.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    record = store.create(url, input_kind="video_url")
+    record.workspace.source_url_path.write_text(url, encoding="utf-8")
+    record.stage = "video_url_uploaded"
+    store.save(record)
+    return {"job_id": record.job_id, "filename": url, "input_kind": "video_url"}
+
+
 @app.post("/api/convert")
 def start_conversion(request: ConvertRequest) -> dict[str, object]:
     record = store.get(request.job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     try:
-        params = ConvertParams.validate(
-            request.bpm,
-            request.time_signature,
-            request.outputs,
-            request.use_gpu,
-        )
+        if record.input_kind in {"audio", "video_url"}:
+            params = ConvertParams.validate(120, "4/4", ["midi", "mp3"], request.use_gpu, transkun_model=request.transkun_model)
+        else:
+            params = ConvertParams.validate(
+                request.bpm,
+                request.time_signature,
+                request.outputs,
+                request.use_gpu,
+                has_pickup_measure=request.has_pickup_measure,
+            )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.start(record, params)

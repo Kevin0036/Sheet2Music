@@ -16,9 +16,66 @@ runs on the GPU/ANE.
 """
 
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 import onnxruntime as ort
+
+
+_DLL_DIRECTORY_HANDLES: list[object] = []
+
+
+def configure_cuda_dlls() -> list[Path]:
+    """Make CUDA/cuDNN wheels importable on Windows before ORT creates a session."""
+    if os.name != "nt":
+        return []
+
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages"
+    candidates = [
+        site_packages / "onnxruntime" / "capi",
+        site_packages / "onnxruntime_gpu" / "capi",
+        site_packages / "nvidia" / "cu13" / "bin",
+        site_packages / "nvidia" / "cu13" / "bin" / "x86_64",
+        site_packages / "nvidia" / "cudnn" / "bin",
+    ]
+    nvidia_root = site_packages / "nvidia"
+    if nvidia_root.is_dir():
+        candidates.extend(sorted(nvidia_root.glob("*/bin")))
+        candidates.extend(sorted(nvidia_root.glob("*/bin/x86_64")))
+
+    directories: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            if candidate.is_dir() and resolved not in directories:
+                directories.append(resolved)
+        except OSError:
+            continue
+
+    path_entries = [str(path) for path in directories]
+    existing_path = os.environ.get("PATH")
+    if existing_path:
+        path_entries.append(existing_path)
+    if path_entries:
+        os.environ["PATH"] = os.pathsep.join(path_entries)
+
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        for directory in directories:
+            try:
+                _DLL_DIRECTORY_HANDLES.append(add_dll_directory(str(directory)))
+            except OSError:
+                continue
+
+    preload_dlls = getattr(ort, "preload_dlls", None)
+    if preload_dlls is not None:
+        try:
+            preload_dlls()
+        except (OSError, RuntimeError):
+            # Session creation below provides the authoritative diagnostic.
+            pass
+    return directories
 
 # Let CoreML use the whole Apple Neural Engine + GPU + CPU and pick the
 # fastest unit per op. Use "CPUAndGPU" to force the GPU only.
@@ -68,6 +125,7 @@ def coreml_mlprogram_providers(model_path: str, compute_units: str = "ALL") -> l
 
 
 def cuda_available() -> bool:
+    configure_cuda_dlls()
     return "CUDAExecutionProvider" in ort.get_available_providers()
 
 
@@ -86,6 +144,7 @@ def gpu_providers(cuda_options: dict[str, Any] | None = None) -> tuple[list[Any]
     Raises ``RuntimeError`` if no GPU provider is available so callers can fall
     back to a plain CPU session exactly as they did for CUDA failures before.
     """
+    configure_cuda_dlls()
     available = ort.get_available_providers()
     if "CUDAExecutionProvider" in available:
         if cuda_options:

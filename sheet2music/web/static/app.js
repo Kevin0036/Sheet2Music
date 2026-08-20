@@ -16,6 +16,10 @@ STAGES.splice(
   0,
   STAGES.length,
   ["running_homr", "HOMR 逐页识别"],
+  ["converting_audio", "MP3 转 WAV"],
+  ["downloading_video_audio", "下载视频音频"],
+  ["detecting_beats", "Beat This 节奏识别"],
+  ["running_transkun", "Transkun V2 转 MIDI"],
   ["repairing_musicxml", "修复 MusicXML"],
   ["automatic_reidentification", "自动检查小节边界"],
   ["automatic_upload_recognition", "识别补充谱表图片"],
@@ -35,6 +39,8 @@ const fileInput = $("file-input");
 const bpmInput = $("bpm");
 const timeSigInput = $("time-signature");
 const gpuInput = $("use-gpu");
+const transkunModelInput = $("transkun-model");
+const pickupInput = $("has-pickup-measure");
 const outputsFieldset = $("outputs");
 const convertBtn = $("convert-btn");
 const resetBtn = $("reset-btn");
@@ -60,6 +66,7 @@ const {
   autoReviewReady,
   batchActions,
   candidateSummaryText,
+  batchFailureReasons,
 } = window.Sheet2MusicReviewState;
 const { saveJobId, loadJobId, clearJobId, initialJobId } = window.Sheet2MusicJobSession;
 const JOB_SESSION_KEY = "sheet2music.current-job";
@@ -67,11 +74,20 @@ const JOB_SESSION_KEY = "sheet2music.current-job";
 let currentJob = null;
 let pollTimer = null;
 let currentAutoResolution = null;
+let currentInputKind = "pdf";
+let enabledForGpuControl = false;
+let latestSystemStatus = null;
 
 function setParamsEnabled(enabled) {
+  enabledForGpuControl = enabled;
   bpmInput.disabled = !enabled;
   timeSigInput.disabled = !enabled;
-  gpuInput.disabled = !enabled;
+  const gpuReady = currentInputKind === "pdf"
+    ? Boolean(latestSystemStatus && latestSystemStatus.gpu && latestSystemStatus.gpu.ok)
+    : Boolean(latestSystemStatus && latestSystemStatus.pytorch_cuda && latestSystemStatus.pytorch_cuda.ok);
+  gpuInput.disabled = !enabled || !gpuReady;
+  transkunModelInput.disabled = !enabled || currentInputKind === "pdf";
+  pickupInput.disabled = !enabled;
   outputsFieldset.disabled = !enabled;
   convertBtn.disabled = !enabled || !isParamsValid();
 }
@@ -87,6 +103,7 @@ function selectedOutputs() {
 
 function resetToEmpty() {
   currentJob = null;
+  currentInputKind = "pdf";
   clearJobId(sessionStorage, JOB_SESSION_KEY);
   stopPolling();
   regionUploadBusy = false;
@@ -114,24 +131,42 @@ function resetToPreview() {
 
 async function handleFile(file) {
   if (!file) return;
-  if (!file.name.toLowerCase().endsWith(".pdf")) {
-    alert("请选择 PDF 文件");
+  const lowerName = file.name.toLowerCase();
+  const isPdf = lowerName.endsWith(".pdf");
+  const isAudio = lowerName.endsWith(".mp3");
+  if (!isPdf && !isAudio) {
+    alert("请选择 PDF 或 MP3 文件");
     return;
   }
   setParamsEnabled(false);
   const form = new FormData();
   form.append("file", file);
   try {
-    const resp = await fetch("/api/preview", { method: "POST", body: form });
+    const resp = await fetch(isPdf ? "/api/preview" : "/api/audio", { method: "POST", body: form });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || "上传失败");
     currentJob = data.job_id;
+    currentInputKind = isAudio ? "audio" : "pdf";
     saveJobId(sessionStorage, JOB_SESSION_KEY, currentJob);
-    $("preview-img").src = data.preview_url + "?t=" + Date.now();
-    $("file-meta").textContent = data.filename + " · 已上传，等待转换";
-    $("preview-area").hidden = false;
+    if (isPdf) {
+      $("preview-img").src = data.preview_url + "?t=" + Date.now();
+      $("preview-img").hidden = false;
+      $("preview-area").hidden = false;
+    } else {
+      $("preview-img").removeAttribute("src");
+      $("preview-img").hidden = true;
+      $("preview-area").hidden = false;
+    }
+    $("file-meta").textContent = data.filename + (isAudio ? " · 已上传，Beat This 将自动检测节奏" : " · 已上传，等待转换");
     $("drop-zone").hidden = true;
     resetToPreview();
+    if (isAudio) {
+      bpmInput.value = "120";
+      bpmInput.disabled = true;
+      timeSigInput.disabled = true;
+      outputsFieldset.querySelectorAll("input").forEach((input) => { input.checked = input.value === "midi" || input.value === "mp3"; });
+      convertBtn.disabled = false;
+    }
   } catch (err) {
     alert("上传/预览失败：" + err.message);
     resetToEmpty();
@@ -149,10 +184,12 @@ async function startConvert() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         job_id: currentJob,
-        bpm: Number(bpmInput.value),
+        bpm: ["audio", "video_url"].includes(currentInputKind) ? null : Number(bpmInput.value),
         time_signature: timeSigInput.value.trim() || "4/4",
         outputs: selectedOutputs(),
-        use_gpu: gpuInput.checked,
+      use_gpu: gpuInput.checked,
+        transkun_model: transkunModelInput.value,
+        has_pickup_measure: pickupInput.checked,
       }),
     });
     const data = await resp.json();
@@ -213,6 +250,33 @@ function renderStages(job) {
         : base;
     }
   });
+}
+
+async function handleVideoUrl() {
+  const url = $("video-url").value.trim();
+  if (!url) return;
+  setParamsEnabled(false);
+  try {
+    const resp = await fetch("/api/video-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "视频 URL 上传失败");
+    currentJob = data.job_id;
+    currentInputKind = "video_url";
+    saveJobId(sessionStorage, JOB_SESSION_KEY, currentJob);
+    $("file-meta").textContent = `${url} · 后台下载音频后自动检测节奏`;
+    $("preview-img").hidden = true;
+    $("preview-area").hidden = false;
+    $("drop-zone").hidden = true;
+    resetToPreview();
+    bpmInput.value = "120";
+    bpmInput.disabled = true;
+    timeSigInput.disabled = true;
+    outputsFieldset.querySelectorAll("input").forEach((input) => { input.checked = input.value === "midi" || input.value === "mp3"; });
+    convertBtn.disabled = false;
+  } catch (err) {
+    alert("视频 URL 上传失败：" + err.message);
+    resetToEmpty();
+  }
 }
 
 function startPolling() {
@@ -429,6 +493,9 @@ function formatFindingObserved(finding) {
 
 function formatFindingSuggestion(finding) {
   const suggestion = finding.suggestion || {};
+  if (suggestion.action === "repair_gap") {
+    return `修复音符之间的过长空隙，小节恢复为 ${suggestion.resulting_beats || "目标拍号"} 拍。`;
+  }
   if (suggestion.action === "compress") {
     return `根据 ${suggestion.corrected_note_count || 0} 个音符的类型、附点或连音标记，将小节修正为 ${suggestion.resulting_beats} 拍。`;
   }
@@ -500,7 +567,8 @@ function renderAutoResolution(job, autoResolution) {
   ));
   $("auto-review-batches").innerHTML = unresolved.map((batch) => {
     const actions = batchActions(batch);
-    const cropUrl = `/api/jobs/${encodeURIComponent(job.job_id)}/auto-resolution/${encodeURIComponent(batch.batch_id)}/crop`;
+    const jobId = (job && job.job_id) || currentJob;
+    const cropUrl = `/api/jobs/${encodeURIComponent(jobId)}/auto-resolution/${encodeURIComponent(batch.batch_id)}/crop`;
     const candidates = (batch.attempts || []).filter((attempt) => (
       attempt.status === "succeeded" && attempt.validation && attempt.validation.accepted
     ));
@@ -517,6 +585,10 @@ function renderAutoResolution(job, autoResolution) {
         <button type="button" class="secondary auto-upload-btn">上传并重新识别</button>
         <span class="auto-action-status" data-auto-status></span>
       </div>` : "";
+    const failureReasons = batchFailureReasons(batch);
+    const failureSummary = failureReasons.length
+      ? `<p class="auto-failure-reasons">自动候选未采用：${failureReasons.map((reason) => esc(reason)).join("；")}</p>`
+      : "";
     return `
       <article class="auto-batch" data-batch-id="${esc(batch.batch_id)}">
         <div class="auto-batch-heading">
@@ -527,6 +599,7 @@ function renderAutoResolution(job, autoResolution) {
           <span class="auto-batch-state">${batch.status === "needs_choice" ? "请选择识别结果" : "需要补充图片"}</span>
         </div>
         <img class="auto-crop" src="${cropUrl}?t=${Date.now()}" alt="需要审核的完整谱表区域" />
+        ${failureSummary}
         ${candidateRows || (batch.status === "needs_choice" ? '<p class="auto-empty">没有可展示的有效候选，请重新尝试。</p>' : "")}
         ${actions.includes("retry") ? '<button type="button" class="secondary auto-retry-btn">重新运行未尝试方案</button>' : ""}
         ${upload}
@@ -548,12 +621,8 @@ function showReview(job) {
   regionUploadBusy = false;
   const analysis = job.analysis || (job.report && job.report.analysis) || {};
   const autoResolution = job.report && job.report.auto_resolution;
-  const automaticTargets = new Set(
-    (autoResolution && autoResolution.batches || []).flatMap((batch) => batch.target_measures || [])
-  );
   const findings = (analysis.findings || []).filter((finding) => (
-    finding.severity === "high"
-    && !(finding.kind === "timing_measure_overflow" && automaticTargets.has(finding.measure_start))
+    finding.severity === "high" && finding.status !== "accepted_original"
   ));
   const suggestedActions = suggestedReviewActions(findings);
   const repairCount = automaticRepairCount(findings);
@@ -590,8 +659,9 @@ function showReview(job) {
       const reidentifyAction = availableActions.includes("reidentify")
         ? `<label><input type="radio" name="review-${id}" value="reidentify" data-review-action /> 上传放大图二次识别</label>`
         : "";
+      const ignoreAction = `<label><input type="radio" name="review-${id}" value="ignore" data-review-action /> 忽略此疑点</label>`;
       return `
-        <article class="finding" data-finding-id="${id}">
+        <article class="finding" data-finding-id="${id}" data-measure-start="${esc(finding.measure_start ?? "")}">
           <div class="finding-topline">
             <h3>疑点 ${index + 1} · ${esc(formatFindingKind(finding.kind))}</h3>
             <span class="finding-range">${esc(formatMeasureRange(finding.measure_start, finding.measure_end))}</span>
@@ -605,7 +675,7 @@ function showReview(job) {
           ${preview ? `<img class="finding-preview" src="${preview}?t=${Date.now()}" alt="来源谱面预览" />` : `<p class="finding-preview-empty">该疑点对应${esc(pages)}，原始页面仍保存在任务工作区。</p>`}
           <fieldset class="finding-actions">
             <legend>审批决定</legend>
-            ${preserveAction}${correctAction}${reidentifyAction}
+            ${preserveAction}${correctAction}${reidentifyAction}${ignoreAction}
           </fieldset>
           <div class="region-controls" hidden>
             <label>区域图片
@@ -641,6 +711,7 @@ function showReview(job) {
   reviewPreserveAllBtn.onclick = () => applyReviewActions(
     findings.map((finding) => (actionsForFinding(finding).includes("preserve") ? "preserve" : null))
   );
+  $("review-ignore-all-btn").onclick = () => applyReviewActions(findings.map(() => "ignore"));
   reviewPreserveAllBtn.disabled = preserveCount === 0;
   reviewPreserveAllBtn.textContent = preserveCount
     ? `批量保留 ${preserveCount} 项可保留变化`
@@ -748,9 +819,14 @@ function updateReviewReady() {
   const findings = Array.from(reviewFindings.querySelectorAll(".finding"));
   const actions = findings.map((finding) => finding.querySelector("[data-review-action]:checked")?.value || null);
   const state = reviewSelectionState(actions, regionUploadBusy);
-  const ready = autoReviewReady(currentAutoResolution || { batches: [] }, actions, regionUploadBusy);
+  const ignoredMeasures = findings
+    .filter((finding, index) => actions[index] === "ignore")
+    .map((finding) => finding.dataset.measureStart)
+    .filter((measure) => measure !== "")
+    .map((measure) => Number(measure));
+  const ready = autoReviewReady(currentAutoResolution || { batches: [] }, actions, regionUploadBusy, ignoredMeasures);
   const autoPending = (currentAutoResolution && currentAutoResolution.batches || [])
-    .some((batch) => batch.status !== "auto_resolved");
+    .some((batch) => !["auto_resolved", "accepted_original"].includes(batch.status));
   approveReviewBtn.disabled = !ready;
   approveReviewBtn.textContent = state.total
     ? `提交审批（${state.selected}/${state.total}）`
@@ -904,6 +980,7 @@ async function resetJob() {
 
 // ---- 事件绑定 ----
 $("pick-file").addEventListener("click", () => fileInput.click());
+$("submit-video-url").addEventListener("click", handleVideoUrl);
 fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) handleFile(fileInput.files[0]);
 });
@@ -970,6 +1047,7 @@ async function loadSystemStatus() {
 }
 
 function renderSystemStatus(status) {
+  latestSystemStatus = status;
   const items = [];
   if (status.homr_root.ok) {
     items.push(statusItem(true, "HOMR 源码", status.homr_root.path, null));
@@ -992,14 +1070,34 @@ function renderSystemStatus(status) {
   }
   if (status.gpu) {
     const providers = (status.gpu.providers || []).join(", ") || "未检测到 ONNX Runtime GPU provider";
-    const detail = status.gpu.fp16_weights_ok
-      ? providers + " · FP16 已就绪"
-      : providers + ` · 缺失 FP16 ${status.gpu.missing_fp16.length} 个文件`;
+    const detail = status.gpu.session_ok
+      ? `GPU 会话已激活 · ${status.gpu.active_providers || providers}`
+      : status.gpu.fp16_weights_ok
+        ? providers + " · GPU 会话不可用"
+        : providers + ` · 缺失 FP16 ${status.gpu.missing_fp16.length} 个文件`;
     items.push(statusItem(status.gpu.ok, "GPU 加速", detail, status.gpu.hint));
+  }
+  if (status.pytorch_cuda) {
+    const detail = status.pytorch_cuda.ok
+      ? `${status.pytorch_cuda.device} · CUDA ${status.pytorch_cuda.cuda_version}`
+      : "不可用";
+    items.push(statusItem(status.pytorch_cuda.ok, "音频模型 CUDA", detail, status.pytorch_cuda.hint));
   }
   status.python_deps.forEach((dep) =>
     items.push(statusItem(dep.ok, dep.name, dep.ok ? "已安装" : "未安装", dep.ok ? null : `pip install ${dep.name}`))
   );
+  if (status.beat_this) {
+    const detail = status.beat_this.ok
+      ? `final0 已验证 · ${status.beat_this.checkpoint}`
+      : "未安装或检查点未通过验证";
+    items.push(statusItem(status.beat_this.ok, "Beat This", detail, status.beat_this.ok ? null : status.beat_this.error));
+  }
+  if (status.transkun) {
+    const detail = status.transkun.ok
+      ? "参考兼容 V2 与 V2 Aug 均已验证"
+      : "未配置或模型身份校验失败";
+    items.push(statusItem(status.transkun.ok, "Transkun", detail, status.transkun.ok ? null : status.transkun.error));
+  }
   status.binaries.forEach((bin) =>
     items.push(statusItem(bin.ok, bin.name, bin.ok ? bin.path : "未找到", bin.hint))
   );
@@ -1010,6 +1108,7 @@ function renderSystemStatus(status) {
   badge.textContent = status.all_ok ? "正常" : "需处理";
 
   $("weights-section").hidden = !status.weights.download_needed;
+  setParamsEnabled(enabledForGpuControl);
 }
 
 async function startWeightDownload() {

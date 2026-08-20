@@ -8,15 +8,18 @@ HOMR 官方 release 后台下载（带进度），无需用户手动装权重。
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
+import subprocess
 import threading
 import zipfile
 from pathlib import Path
 
 import requests
 
-from .settings import ffmpeg_binary, find_tool, homr_root, pdftoppm_binary
+from .homr import configure_gpu_dlls, probe_cuda_provider
+from .settings import beat_this_checkpoint, ffmpeg_binary, find_tool, fluidsynth_binary, homr_root, pdftoppm_binary, soundfont_path, transkun_model_files, transkun_python, transkun_root
 
 #: HOMR 官方权重下载地址（与 homr/download_utils.py 一致）。
 _BASE_URL = "https://github.com/liebharc/homr/releases/download/onnx_checkpoints/"
@@ -43,6 +46,7 @@ _BINARY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("musescore3", "musescore", "mscore3", "mscore", "MuseScore3", "MuseScore4", "musescore4"),
     ),
     ("ffmpeg", ("ffmpeg",)),
+    ("FluidSynth", ("fluidsynth",)),
 )
 
 
@@ -94,6 +98,7 @@ def model_files(root: Path, include_fp16: bool = False) -> list[Path]:
 
 def available_gpu_providers() -> list[str]:
     """Return ONNX Runtime providers that can activate HOMR's GPU path."""
+    configure_gpu_dlls()
     try:
         import onnxruntime as ort
     except ImportError:
@@ -105,10 +110,54 @@ def available_gpu_providers() -> list[str]:
     ]
 
 
+def pytorch_cuda_status(torch_module: object | None = None) -> dict[str, object]:
+    """Report the CUDA runtime used by Beat This and Transkun."""
+    try:
+        torch = torch_module or importlib.import_module("torch")
+        cuda = torch.cuda
+        available = bool(cuda.is_available())
+        return {
+            "ok": available,
+            "torch_version": str(torch.__version__),
+            "cuda_version": str(torch.version.cuda or ""),
+            "device": str(cuda.get_device_name(0)) if available else "",
+            "device_count": int(cuda.device_count()) if available else 0,
+            "hint": None if available else "PyTorch CUDA 不可用，音频模型只能使用 CPU",
+        }
+    except (ImportError, AttributeError, OSError, RuntimeError) as exc:
+        return {
+            "ok": False,
+            "torch_version": "",
+            "cuda_version": "",
+            "device": "",
+            "device_count": 0,
+            "hint": f"PyTorch CUDA 探测失败: {type(exc).__name__}: {exc}",
+        }
+
+
+def probe_pytorch_cuda() -> dict[str, object]:
+    """Probe PyTorch in a clean process to avoid mixing ORT and Torch CUDA DLLs."""
+    try:
+        result = subprocess.run(
+            [transkun_python(), "-m", "sheet2music.core.audio_worker", "torch-status"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (FileNotFoundError, IndexError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        return {
+            "ok": False,
+            "torch_version": "",
+            "cuda_version": "",
+            "device": "",
+            "device_count": 0,
+            "hint": f"PyTorch CUDA 子进程探测失败: {type(exc).__name__}: {exc}",
+        }
 def missing_model_files(use_gpu: bool = False) -> list[Path]:
     """当前解析到的 HOMR 根目录下缺失的权重文件。"""
-    # HOMR --gpu auto falls back to FP32/CPU when no supported provider exists.
-    # Only require FP16 files when the selected mode can actually use them.
+    # GPU mode requires FP16 files only when a CUDA provider is actually present.
     include_fp16 = use_gpu and bool(available_gpu_providers())
     return [
         path for path in model_files(homr_root(), include_fp16=include_fp16) if not path.exists()
@@ -139,9 +188,16 @@ def system_status() -> dict[str, object]:
     except ImportError:
         pass
     accelerator_providers = available_gpu_providers()
-    gpu_ok = bool(accelerator_providers and not fp16_missing and homr_root_info["ok"])
+    if homr_root_info["ok"] and accelerator_providers:
+        gpu_probe_ok, gpu_probe_detail = probe_cuda_provider()
+    else:
+        gpu_probe_ok = False
+        gpu_probe_detail = "FP16 权重缺失或未发现 CUDA provider"
+    gpu_ok = bool(gpu_probe_ok and homr_root_info["ok"])
     gpu_hint = None
-    if not accelerator_providers:
+    if not gpu_probe_ok:
+        gpu_hint = gpu_probe_detail
+    elif not accelerator_providers:
         gpu_hint = "未检测到 CUDA/CoreML provider，将使用 CPU"
     elif fp16_missing:
         gpu_hint = "GPU provider 已检测到，但 FP16 权重尚未就绪"
@@ -162,17 +218,58 @@ def system_status() -> dict[str, object]:
                 if name == "pdftoppm"
                 else ffmpeg_binary()
                 if name == "ffmpeg"
+                else fluidsynth_binary()
+                if name == "FluidSynth"
                 else find_tool(name, *candidates)
             )
             binaries.append({"name": name, "ok": True, "path": resolved, "hint": None})
         except FileNotFoundError:
             binaries.append({"name": name, "ok": False, "path": None, "hint": _install_hint(name)})
 
+    try:
+        v2_weight, v2_conf = transkun_model_files("v2")
+        aug_weight, aug_conf = transkun_model_files("v2_aug")
+        transkun_info = {
+            "ok": True,
+            "root": str(transkun_root()),
+            "model_dir": str(v2_weight.parent),
+            "models": {
+                "v2": {"ok": True, "identity_verified": True, "weight": str(v2_weight), "conf": str(v2_conf)},
+                "v2_aug": {"ok": True, "identity_verified": True, "weight": str(aug_weight), "conf": str(aug_conf)},
+            },
+        }
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        transkun_info = {"ok": False, "error": str(exc)}
+
+    beat_this_info: dict[str, object] = {"ok": False, "identity_verified": False}
+    try:
+        importlib.import_module("beat_this")
+        checkpoint = beat_this_checkpoint()
+        beat_this_info = {"ok": True, "identity_verified": True, "checkpoint": str(checkpoint)}
+    except (ImportError, FileNotFoundError, OSError, RuntimeError) as exc:
+        beat_this_info["error"] = str(exc)
+
+    fluidsynth_info: dict[str, object] = {"ok": False}
+    try:
+        executable = fluidsynth_binary()
+        completed = subprocess.run([executable, "--version"], check=True, capture_output=True, text=True, timeout=20)
+        version_text = (completed.stdout or completed.stderr or "").strip()
+        if "2.5.6" not in version_text:
+            raise RuntimeError(f"FluidSynth 版本不匹配: {version_text}")
+        soundfont = soundfont_path()
+        fluidsynth_info = {"ok": True, "version": "2.5.6", "executable": executable, "soundfont": str(soundfont), "identity_verified": True}
+    except (FileNotFoundError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        fluidsynth_info["error"] = str(exc)
+
+    pytorch_cuda = probe_pytorch_cuda()
     all_ok = bool(
         homr_root_info["ok"]
         and not missing
         and all(item["ok"] for item in deps)
         and all(item["ok"] for item in binaries)
+        and transkun_info["ok"]
+        and bool(beat_this_info["ok"])
+        and bool(fluidsynth_info["ok"])
     )
     return {
         "homr_root": homr_root_info,
@@ -186,12 +283,18 @@ def system_status() -> dict[str, object]:
             "ok": gpu_ok,
             "providers": providers,
             "cuda_available": "CUDAExecutionProvider" in providers,
+            "active_providers": gpu_probe_detail if gpu_probe_ok else "",
+            "session_ok": gpu_probe_ok,
             "fp16_weights_ok": not fp16_missing and bool(homr_root_info["ok"]),
             "missing_fp16": fp16_missing,
             "hint": gpu_hint,
         },
+        "pytorch_cuda": pytorch_cuda,
         "python_deps": deps,
         "binaries": binaries,
+        "transkun": transkun_info,
+        "beat_this": beat_this_info,
+        "fluidsynth": fluidsynth_info,
         "all_ok": all_ok,
     }
 
