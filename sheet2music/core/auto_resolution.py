@@ -82,7 +82,6 @@ class BatchStatus(str, Enum):
     ACCEPTED_ORIGINAL = "accepted_original"
     NEEDS_CHOICE = "needs_choice"
     NEEDS_UPLOAD = "needs_upload"
-    ACCEPTED_ORIGINAL = "accepted_original"
     FAILED = "failed"
 
 
