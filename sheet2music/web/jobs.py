@@ -529,10 +529,11 @@ class JobStore:
             plan,
             page_measure_offsets=offsets if isinstance(offsets, list) else [],
         ).to_dict()
+        accepted_original = getattr(BatchStatus, "ACCEPTED_ORIGINAL", None)
         accepted_measures = {
             measure
             for batch in batches
-            if batch.status == BatchStatus.ACCEPTED_ORIGINAL
+            if accepted_original is not None and batch.status == accepted_original
             for measure in batch.target_measures
         }
         findings = analysis.get("findings", [])
@@ -543,7 +544,7 @@ class JobStore:
                     and finding.get("kind") == "timing_measure_overflow"
                     and finding.get("measure_start") in accepted_measures
                 ):
-                    finding["status"] = BatchStatus.ACCEPTED_ORIGINAL.value
+                    finding["status"] = getattr(accepted_original, "value", "accepted_original")
             analysis["requires_review"] = any(
                 isinstance(finding, dict)
                 and finding.get("severity") == "high"

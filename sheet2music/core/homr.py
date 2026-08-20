@@ -1,6 +1,6 @@
 """HOMR 子进程封装（与 `run_homr_trial.py` 的调用方式一致）。
 
-命令：`python -m homr.main --gpu <no|force> [--output-metronome <bpm> --output-tempo <bpm>] <image>`
+命令：`python -m homr.main --gpu <no|auto> [--output-metronome <bpm> --output-tempo <bpm>] <image>`
 PYTHONPATH 前置 HOMR_ROOT；HOMR 在当前工作目录输出 `<image>.musicxml`。
 """
 
@@ -40,7 +40,7 @@ def build_homr_command(
     use_gpu: bool = False,
     layout_output: Path | None = None,
 ) -> list[str]:
-    command = [sys.executable, "-m", "homr.main", "--gpu", "force" if use_gpu else "no"]
+    command = [sys.executable, "-m", "homr.main", "--gpu", "auto" if use_gpu else "no"]
     if debug:
         command.append("--debug")
     if tempo_bpm is not None:
