@@ -141,6 +141,8 @@ MP3/视频音频路径使用与 HOMR 相同的项目 `.venv`。本项目当前�
 
 外部工具只需集中管理一套：`ffmpeg.exe` 与 `ffprobe.exe` 必须来自同一目录，另配一套 MuseScore 与 Poppler。若系统 PATH 不稳定，请通过 `SHEET2MUSIC_FFMPEG` 固定 ffmpeg 路径，而不是复制二进制文件到项目目录。
 
+所有 MIDI 音频输出（PDF、MP3、视频 URL，以及后续在线试听/编辑）共用 FluidSynth 渲染器。需要 FluidSynth `2.5.6` 和官方 `MuseScore_General.sf2`；默认缓存位置分别为 `%USERPROFILE%\\.cache\\music_ai_models\\fluidsynth\\2.5.6\\bin\\fluidsynth.exe` 和 `%USERPROFILE%\\.cache\\music_ai_models\\soundfonts\\MuseScore_General.sf2`。也可用 `SHEET2MUSIC_FLUIDSYNTH`、`SHEET2MUSIC_SOUNDFONT` 覆盖。渲染器直接提供 `render_midi_to_wav()`，因此 GUI 试听和编辑保存不需要重复实现 MIDI 音频合成。
+
 ### Transkun 转录流程
 
 音频输入统一由 ffmpeg 转为 `44.1 kHz`、双声道、PCM s16 WAV。Beat This `final0` 只用于清洗节拍网格、推断全局 BPM 和高置信度拍号；不会量化、移动、增删 Transkun 的任何音符，也不会写可变速度图。
@@ -154,6 +156,67 @@ MP3/视频音频路径使用与 HOMR 相同的项目 `.venv`。本项目当前�
 - `TRANSKUN_V2_WEIGHT` / `TRANSKUN_V2_CONF`：可选，覆盖默认 V2 权重和配置
 - `TRANSKUN_V2_AUG_WEIGHT` / `TRANSKUN_V2_AUG_CONF`：可选，覆盖 V2 Aug 权重和配置
 - `SHEET2MUSIC_FFMPEG`：可选，固定 `ffmpeg.exe`，同目录需要有 `ffprobe.exe`
+
+### 本机环境恢复清单
+
+Transkun 源码和大模型不进入 Git。新机器、清理 `vendor`，或从压缩包恢复项目后，必须同时准备源码和权重；只安装 Python 依赖不会通过环境检查。
+
+PowerShell 示例：
+
+```powershell
+# 进入 Sheet2Music 根目录
+git clone https://github.com/Yujia-Yan/Transkun.git vendor\Transkun
+
+# 原始 Transkun V2 随官方源码放置
+# vendor\Transkun\transkun\pretrained\2.0.pt
+# vendor\Transkun\transkun\pretrained\2.0.conf
+
+# V2 Aug：将下载的压缩包解压为以下目录结构
+# models\transkun-v2-aug\checkpointMSimplerAug\checkpoint.pt
+# models\transkun-v2-aug\checkpointMSimplerAug\model.conf
+
+# 检查项目环境
+.venv\Scripts\python.exe -m pip check
+sheet2music
+```
+
+如果使用本项目目录中的压缩包，可直接执行：
+
+```powershell
+tar -xf checkpointTransformer.zip -C models
+New-Item -ItemType Directory -Force models\transkun-v2-aug | Out-Null
+tar -xf checkpointTransformerAug.zip -C models\transkun-v2-aug
+```
+
+解压后如果目录名不是 `checkpointMSimplerAug`，请整理为上面列出的完整路径，或通过
+`TRANSKUN_V2_AUG_WEIGHT` 和 `TRANSKUN_V2_AUG_CONF` 显式指定文件。环境检查会校验文件大小和 SHA-256，不接受重命名但内容不匹配的权重。
+
+Beat This 还需要经过校验的 `final0` 检查点，默认位置为：
+
+```text
+%USERPROFILE%\.cache\torch\hub\checkpoints\beat_this-final0.ckpt
+```
+
+系统工具要求 `ffmpeg.exe`/`ffprobe.exe` 来自同一目录，另外需要 MuseScore 和 Poppler。音频模型使用项目唯一 `.venv` 的 PyTorch CUDA；当前已验证设备为 RTX 4060。环境检查中的 `transkun`、`beat_this`、`pytorch_cuda` 和 `binaries` 均通过后，音频任务才会进入推理阶段。
+
+## MIDI 回渲染差异分析
+
+`vendor/music-to-midi` 的钢琴专用转写完成后，播放音频走的是独立的 FluidSynth 路径，核心逻辑位于 `src/core/muscriptor_result_assets.py`：
+
+1. 使用固定的 FluidSynth `2.5.6` Windows runtime，而不是调用 MuseScore。
+2. 使用 MuScriptor 官方 `MuseScore_General.sf2` SoundFont，并对文件身份做大小和 SHA-256 校验。
+3. 以 `44,100 Hz` 直接生成 WAV：`fluidsynth -ni -F output.wav -r 44100 soundfont.sf2 input.mid`。
+4. 单钢琴轨直接合成完整 MIDI，因此 MIDI 中的控制器事件（尤其是 `CC64` 延音踏板）会进入最终声音；多乐器时才按乐器拆分后分别合成。
+5. 生成的是无损 PCM WAV，并在 GUI 中做长度覆盖、淡出、通道混音和原声/转写声道对齐；它的“在线试听”并不等同于把 WAV 再压成 MP3。
+
+Sheet2Music 当前使用 MuseScore CLI 将 MIDI 渲染为 WAV，再用 ffmpeg `libmp3lame -qscale:a 2` 转成 MP3。两条路径的音符可以完全一致，但仍会有以下听感差异：
+
+- 使用的钢琴 SoundFont、滤波器、起音/释音包络不同；MuseScore 默认音色不等于官方 MuseScore General SoundFont 的 FluidSynth 渲染。
+- FluidSynth 直接消费 MIDI 控制器，当前 Sheet2Music 的回渲染链路没有针对 `CC64`、声道增益和乐器总线做参考项目同等的混音处理。
+- 参考项目试听的是 44.1 kHz PCM WAV；Sheet2Music 的下载产物经过 MP3 有损编码，瞬态和延音尾部会进一步变化。
+- 参考项目对最终持续时间、尾音覆盖和淡出有显式边界检查；我们的 MuseScore 导出依赖其自身的 MIDI 播放边界。
+
+因此，Transkun 识别结果相同并不保证 MP3 波形相同。若要达到 `music-to-midi` 的试听效果，Step 2 之后应增加独立的 FluidSynth 渲染适配器，固定 FluidSynth 版本和官方 SoundFont，先输出 44.1 kHz PCM WAV，再按需要生成 MP3；同时保留 CC64、长度覆盖和淡出/混音策略。仅调整当前 ffmpeg 的 MP3 码率不能解决音色和踏板差异。
 
 ## 测试
 

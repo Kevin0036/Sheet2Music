@@ -45,6 +45,12 @@ BEAT_THIS_FINAL0_IDENTITY = FileIdentity(
     "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331",
 )
 
+FLUIDSYNTH_VERSION = "2.5.6"
+MUSICSCORE_GENERAL_SF2_IDENTITY = FileIdentity(
+    215_614_036,
+    "ee51d2c4b1525e70f19a45909c4fd7a2e26d91d115fa89dbf5a6bc413d8b9bf3",
+)
+
 
 def _env(*names: str, default: str | None = None) -> str | None:
     for name in names:
@@ -211,6 +217,44 @@ def ffmpeg_binary() -> str:
     if windows_ffmpeg is not None:
         return windows_ffmpeg
     return find_tool("ffmpeg", "ffmpeg.exe", "ffmpeg")
+
+
+def fluidsynth_binary() -> str:
+    configured = _env("SHEET2MUSIC_FLUIDSYNTH")
+    candidates = [Path(configured)] if configured else []
+    cache = Path.home() / ".cache" / "music_ai_models" / "fluidsynth" / FLUIDSYNTH_VERSION
+    candidates.append(cache / "bin" / ("fluidsynth.exe" if os.name == "nt" else "fluidsynth"))
+    discovered = shutil.which("fluidsynth")
+    if discovered:
+        candidates.append(Path(discovered))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    raise FileNotFoundError(
+        f"找不到 FluidSynth {FLUIDSYNTH_VERSION}；请设置 SHEET2MUSIC_FLUIDSYNTH 或安装固定版本"
+    )
+
+
+def soundfont_path() -> Path:
+    configured = _env("SHEET2MUSIC_SOUNDFONT")
+    candidates = [Path(configured)] if configured else []
+    candidates.extend(
+        [
+            TOOL_ROOT / "resources" / "MuseScore_General.sf2",
+            Path.home() / ".cache" / "music_ai_models" / "soundfonts" / "MuseScore_General.sf2",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return validate_file_identity(
+                candidate.resolve(),
+                expected_size=MUSICSCORE_GENERAL_SF2_IDENTITY.size,
+                expected_sha256=MUSICSCORE_GENERAL_SF2_IDENTITY.sha256,
+                label="MuseScore General SoundFont",
+            )
+    raise FileNotFoundError(
+        "MuseScore General SoundFont 不存在；请设置 SHEET2MUSIC_SOUNDFONT 或下载 MuseScore_General.sf2"
+    )
 
 
 def transkun_root() -> Path:
