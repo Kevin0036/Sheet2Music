@@ -36,13 +36,67 @@ class SystemStatusTest(unittest.TestCase):
 
     def test_status_shape(self) -> None:
         status = system.system_status()
-        for key in ("homr_root", "weights", "gpu", "python_deps", "binaries", "all_ok"):
+        for key in ("homr_root", "weights", "gpu", "python_deps", "binaries", "transkun", "beat_this", "all_ok"):
             self.assertIn(key, status)
         self.assertIn("ok", status["weights"])
         self.assertIn("missing", status["weights"])
         self.assertIsInstance(status["python_deps"], list)
         self.assertIsInstance(status["binaries"], list)
         self.assertIn("providers", status["gpu"])
+        self.assertIn("session_ok", status["gpu"])
+
+    def test_status_does_not_claim_gpu_when_cuda_session_falls_back(self) -> None:
+        with mock.patch.object(system, "available_gpu_providers", return_value=["CUDAExecutionProvider"]):
+            with mock.patch.object(
+                system,
+                "probe_cuda_provider",
+                return_value=(False, "CUDA 会话初始化失败: missing DLL"),
+            ):
+                status = system.system_status()
+
+        self.assertFalse(status["gpu"]["ok"])
+        self.assertFalse(status["gpu"]["session_ok"])
+        self.assertIn("missing DLL", status["gpu"]["hint"])
+
+    def test_status_reports_pytorch_cuda_for_audio_models(self) -> None:
+        fake_torch = mock.MagicMock()
+        fake_torch.__version__ = "2.11.0+cu128"
+        fake_torch.version.cuda = "12.8"
+        fake_torch.cuda.is_available.return_value = True
+        fake_torch.cuda.device_count.return_value = 1
+        fake_torch.cuda.get_device_name.return_value = "NVIDIA GeForce RTX 4060 Laptop GPU"
+
+        status = system.pytorch_cuda_status(fake_torch)
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["device"], "NVIDIA GeForce RTX 4060 Laptop GPU")
+        self.assertEqual(status["cuda_version"], "12.8")
+        self.assertEqual(status["torch_version"], "2.11.0+cu128")
+
+    def test_status_reports_verified_beat_this_and_model_identities(self) -> None:
+        status = system.system_status()
+
+        self.assertIn("identity_verified", status["transkun"]["models"]["v2"])
+        self.assertIn("identity_verified", status["transkun"]["models"]["v2_aug"])
+        self.assertIn("identity_verified", status["beat_this"])
+
+    def test_pytorch_cuda_status_handles_windows_dll_load_failure(self) -> None:
+        with mock.patch.object(system.importlib, "import_module", side_effect=OSError("missing cudnn dll")):
+            status = system.pytorch_cuda_status()
+
+        self.assertFalse(status["ok"])
+        self.assertIn("OSError", status["hint"])
+
+    def test_probe_pytorch_cuda_uses_isolated_worker(self) -> None:
+        completed = mock.MagicMock(
+            stdout='{"ok": true, "device": "RTX 4060", "torch_version": "2.11", "cuda_version": "12.8", "device_count": 1}'
+        )
+        with mock.patch.object(system.subprocess, "run", return_value=completed) as run:
+            status = system.probe_pytorch_cuda()
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["device"], "RTX 4060")
+        self.assertIn("sheet2music.core.audio_worker", run.call_args.args[0])
 
     def test_model_files_include_fp16_variants_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

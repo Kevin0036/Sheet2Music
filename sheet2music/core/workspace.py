@@ -39,20 +39,44 @@ class JobWorkspace:
         self.root = root
         self.input_dir = root / "input"
         self.preview_dir = root / "preview"
+        self.audio_dir = root / "audio"
         self.pages_dir = root / "pages"
+        self.page_geometry_dir = self.pages_dir / "geometry"
+        self.layout_dir = root / "layout"
         self.raw_page_xml_dir = root / "homr_raw"
         self.fixed_page_xml_dir = root / "homr_fixed"
         self.homr_work_dir = root / "homr_work"
+        self.region_dir = root / "regions"
+        self.region_upload_dir = self.region_dir / "uploads"
+        self.region_raw_xml_dir = self.region_dir / "raw"
+        self.region_merged_xml_dir = self.region_dir / "merged"
+        self.region_homr_work_dir = self.region_dir / "homr_work"
+        self.auto_resolution_dir = root / "auto_resolution"
+        self.auto_resolution_crop_dir = self.auto_resolution_dir / "crops"
+        self.auto_resolution_candidate_dir = self.auto_resolution_dir / "candidates"
+        self.auto_resolution_validation_dir = self.auto_resolution_dir / "validation"
+        self.auto_resolution_upload_dir = self.auto_resolution_dir / "uploads"
         self.output_dir = root / "output"
 
     def create(self) -> "JobWorkspace":
         for directory in (
             self.input_dir,
             self.preview_dir,
+            self.audio_dir,
             self.pages_dir,
+            self.page_geometry_dir,
+            self.layout_dir,
             self.raw_page_xml_dir,
             self.fixed_page_xml_dir,
             self.homr_work_dir,
+            self.region_upload_dir,
+            self.region_raw_xml_dir,
+            self.region_merged_xml_dir,
+            self.region_homr_work_dir,
+            self.auto_resolution_crop_dir,
+            self.auto_resolution_candidate_dir,
+            self.auto_resolution_validation_dir,
+            self.auto_resolution_upload_dir,
             self.output_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -62,9 +86,39 @@ class JobWorkspace:
         if self.root.exists():
             shutil.rmtree(self.root, ignore_errors=True)
 
+    def reset_auto_resolution(self) -> None:
+        if self.auto_resolution_dir.exists():
+            shutil.rmtree(self.auto_resolution_dir)
+        for directory in (
+            self.auto_resolution_crop_dir,
+            self.auto_resolution_candidate_dir,
+            self.auto_resolution_validation_dir,
+            self.auto_resolution_upload_dir,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+        automatic_candidate = self.output_dir / "score.auto.musicxml"
+        if automatic_candidate.exists():
+            automatic_candidate.unlink()
+
     @property
     def pdf_path(self) -> Path:
         return self.input_dir / "score.pdf"
+
+    @property
+    def audio_path(self) -> Path:
+        return self.input_dir / "score.mp3"
+
+    @property
+    def source_url_path(self) -> Path:
+        return self.input_dir / "source.url"
+
+    @property
+    def audio_wav_path(self) -> Path:
+        return self.audio_dir / "score.wav"
+
+    @property
+    def beats_path(self) -> Path:
+        return self.audio_dir / "beats.json"
 
     def artifacts(self) -> list[ArtifactInfo]:
         """可下载产物：规范输出（score.musicxml / score.mid / score.mp3 / score.zip）

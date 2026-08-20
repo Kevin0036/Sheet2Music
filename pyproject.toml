@@ -16,14 +16,17 @@ dependencies = [
     "python-multipart",
     # 本工具核心
     "miditoolkit",
+    "mido",
     # HOMR 推理（源码由 vendor/homr 或 HOMR_ROOT 提供；权重首次使用时在界面下载）
     "numpy",
     "opencv-python-headless",
     "Pillow",
     "musicxml",
     "rapidocr",
-    "onnxruntime",
+    "onnxruntime-gpu[cuda,cudnn] ; platform_system == 'Windows'",
+    "onnxruntime ; platform_system != 'Windows'",
     "requests",
+    "yt-dlp",
 ]
 
 [project.optional-dependencies]

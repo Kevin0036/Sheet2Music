@@ -929,3 +929,31 @@ Add the measured batch counts, unresolved regions, provider used, test commands,
 git add docs/nautilus-timing-clef-repair-plan.md
 git commit -m "docs: record automatic timing acceptance results"
 ```
+
+### Task 11: Separate Printed Measure Numbers From Internal Ordinals
+
+**Status:** Planned after the current safety and recovery changes are verified.
+
+The retained Nautilus score starts with a pickup measure. On page 2, the first
+visible measure is printed as measure 12, while the current cumulative element
+count maps it to internal measure 13. The review UI therefore displays measure
+numbers one higher than the printed score from page 2 onward. This is a display
+and mapping-model problem; it must not be patched by shifting replacement
+targets without preserving their internal MusicXML ordinal.
+
+- [ ] Add distinct `measure_ordinal` and `display_measure_number` fields to layout,
+  finding, batch, and review data instead of overloading one integer.
+- [ ] Detect pickup/implicit opening measures conservatively from timing and source
+  metadata; when confidence is insufficient, label the UI as an internal ordinal.
+- [ ] Verify every automatic crop actually contains the target ordinal and show the
+  printed number separately when known.
+- [ ] After whole-system recognition fails, add a second automatic pass cropped to
+  the detected target-measure boundaries within the same system. Keep at least one
+  same-system anchor when available and retain all structural/timing hard gates.
+- [ ] Never extend a crop across systems merely to obtain an adjacent anchor. If a
+  target is at a system boundary, use the anchor on the same row or mark evidence
+  insufficient.
+- [ ] Add a Nautilus regression for the pickup and page-2 transition: printed
+  measures 12, 13, and 14 must map to the correct internal ordinals and system rows.
+- [ ] Re-run the 18 unresolved batches and compare how many are resolved by the
+  single-measure fallback before exposing upload as the final option.
