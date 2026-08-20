@@ -141,6 +141,8 @@ MP3/视频音频路径使用与 HOMR 相同的项目 `.venv`。本项目当前�
 
 外部工具只需集中管理一套：`ffmpeg.exe` 与 `ffprobe.exe` 必须来自同一目录，另配一套 MuseScore 与 Poppler。若系统 PATH 不稳定，请通过 `SHEET2MUSIC_FFMPEG` 固定 ffmpeg 路径，而不是复制二进制文件到项目目录。
 
+所有 MIDI 音频输出（PDF、MP3、视频 URL，以及后续在线试听/编辑）共用 FluidSynth 渲染器。需要 FluidSynth `2.5.6` 和官方 `MuseScore_General.sf2`；默认缓存位置分别为 `%USERPROFILE%\\.cache\\music_ai_models\\fluidsynth\\2.5.6\\bin\\fluidsynth.exe` 和 `%USERPROFILE%\\.cache\\music_ai_models\\soundfonts\\MuseScore_General.sf2`。也可用 `SHEET2MUSIC_FLUIDSYNTH`、`SHEET2MUSIC_SOUNDFONT` 覆盖。渲染器直接提供 `render_midi_to_wav()`，因此 GUI 试听和编辑保存不需要重复实现 MIDI 音频合成。
+
 ### Transkun 转录流程
 
 音频输入统一由 ffmpeg 转为 `44.1 kHz`、双声道、PCM s16 WAV。Beat This `final0` 只用于清洗节拍网格、推断全局 BPM 和高置信度拍号；不会量化、移动、增删 Transkun 的任何音符，也不会写可变速度图。

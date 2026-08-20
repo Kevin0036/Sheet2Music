@@ -36,7 +36,7 @@ class SystemStatusTest(unittest.TestCase):
 
     def test_status_shape(self) -> None:
         status = system.system_status()
-        for key in ("homr_root", "weights", "gpu", "python_deps", "binaries", "transkun", "beat_this", "all_ok"):
+        for key in ("homr_root", "weights", "gpu", "python_deps", "binaries", "transkun", "beat_this", "fluidsynth", "all_ok"):
             self.assertIn(key, status)
         self.assertIn("ok", status["weights"])
         self.assertIn("missing", status["weights"])

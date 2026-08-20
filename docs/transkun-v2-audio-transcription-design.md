@@ -132,3 +132,10 @@ Beat This 必须安装在可被当前 Python 或 Transkun 环境访问的环境�
 - 对同一段规范化 WAV，Sheet2Music 与 `music-to-midi` 的参考 worker 已分别完成 V2 与 V2 Aug 逐事件比对：V2 为 674 个音符、V2 Aug 为 710 个音符；两者的 `(pitch, start, end, velocity)` 四元组均完全一致。
 - RTX 4060 与唯一项目 `.venv` 已完成真实 CUDA 推理验收。`audio/` 三首本地 MP3 已使用默认 V2 端到端生成可读取 MIDI、回渲染 MP3 和审计报告；V2 Aug 按项目范围只完成一首完整曲目验收（2,928 个音符，检测 BPM 127.370，未达到拍号推断置信度，因此未写入拍号）。
 - 本机随 `2.0.pt` 提供的 `2.0.conf` 为 819 bytes、SHA-256 `edc237514eb7881f0f96b5769b20225c056c5c4e52f3804d77d8f6e39ebdbb33`，与参考仓库中旧的 782-byte 哈希记录不同，但 JSON 语义相同，且上述真实逐事件等价验证以该物理配套文件完成。
+
+### 2026-08-20：统一 FluidSynth 回渲染管线
+
+- PDF、MP3 和视频 URL 的 MIDI 音频输出统一改为 `FluidSynth 2.5.6 + MuseScore_General.sf2 -> 44.1 kHz PCM16 WAV -> ffmpeg MP3`；MuseScore 仍只负责 PDF 的 MusicXML -> MIDI 导出。
+- 新增 `sheet2music.core.fluidsynth_renderer` 作为独立渲染接口。`render_midi_to_wav()` 可直接被后续 GUI 在线试听/编辑任务调用，不依赖 Web JobStore；`render_midi_to_mp3()` 负责下载产物。
+- FluidSynth runtime、SoundFont 版本/大小/SHA-256 均在环境状态中校验。渲染器不重写 MIDI，因此 `CC64` 延音踏板和其他控制器会原样传给 FluidSynth；同时检查 44.1 kHz、双声道、PCM16 和末尾尾音覆盖。
+- 本机已下载并验证 FluidSynth 2.5.6 和官方 SoundFont。真实 FluidSynth WAV 渲染已成功；当前 Codex 沙箱账户执行 WinGet ffmpeg 时受 Windows ACL 拒绝，MP3 转码须由用户账户运行或通过 `SHEET2MUSIC_FFMPEG` 指向可执行的同目录 `ffmpeg.exe`。

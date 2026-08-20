@@ -19,7 +19,7 @@ from pathlib import Path
 import requests
 
 from .homr import configure_gpu_dlls, probe_cuda_provider
-from .settings import beat_this_checkpoint, ffmpeg_binary, find_tool, homr_root, pdftoppm_binary, transkun_model_files, transkun_python, transkun_root
+from .settings import beat_this_checkpoint, ffmpeg_binary, find_tool, fluidsynth_binary, homr_root, pdftoppm_binary, soundfont_path, transkun_model_files, transkun_python, transkun_root
 
 #: HOMR 官方权重下载地址（与 homr/download_utils.py 一致）。
 _BASE_URL = "https://github.com/liebharc/homr/releases/download/onnx_checkpoints/"
@@ -46,6 +46,7 @@ _BINARY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("musescore3", "musescore", "mscore3", "mscore", "MuseScore3", "MuseScore4", "musescore4"),
     ),
     ("ffmpeg", ("ffmpeg",)),
+    ("FluidSynth", ("fluidsynth",)),
 )
 
 
@@ -217,6 +218,8 @@ def system_status() -> dict[str, object]:
                 if name == "pdftoppm"
                 else ffmpeg_binary()
                 if name == "ffmpeg"
+                else fluidsynth_binary()
+                if name == "FluidSynth"
                 else find_tool(name, *candidates)
             )
             binaries.append({"name": name, "ok": True, "path": resolved, "hint": None})
@@ -246,6 +249,18 @@ def system_status() -> dict[str, object]:
     except (ImportError, FileNotFoundError, OSError, RuntimeError) as exc:
         beat_this_info["error"] = str(exc)
 
+    fluidsynth_info: dict[str, object] = {"ok": False}
+    try:
+        executable = fluidsynth_binary()
+        completed = subprocess.run([executable, "--version"], check=True, capture_output=True, text=True, timeout=20)
+        version_text = (completed.stdout or completed.stderr or "").strip()
+        if "2.5.6" not in version_text:
+            raise RuntimeError(f"FluidSynth 版本不匹配: {version_text}")
+        soundfont = soundfont_path()
+        fluidsynth_info = {"ok": True, "version": "2.5.6", "executable": executable, "soundfont": str(soundfont), "identity_verified": True}
+    except (FileNotFoundError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        fluidsynth_info["error"] = str(exc)
+
     pytorch_cuda = probe_pytorch_cuda()
     all_ok = bool(
         homr_root_info["ok"]
@@ -254,6 +269,7 @@ def system_status() -> dict[str, object]:
         and all(item["ok"] for item in binaries)
         and transkun_info["ok"]
         and bool(beat_this_info["ok"])
+        and bool(fluidsynth_info["ok"])
     )
     return {
         "homr_root": homr_root_info,
@@ -278,6 +294,7 @@ def system_status() -> dict[str, object]:
         "binaries": binaries,
         "transkun": transkun_info,
         "beat_this": beat_this_info,
+        "fluidsynth": fluidsynth_info,
         "all_ok": all_ok,
     }
 
