@@ -79,6 +79,14 @@ class DeterministicTimingRepair:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class ForwardGapRepair:
+    applied: bool
+    reductions: tuple[tuple[int, int, int], ...] = ()
+    measure: ET.Element | None = None
+    reason: str | None = None
+
+
 def parse_time_signature(value: str) -> tuple[int, int]:
     beats_text, beat_type_text = value.split("/", maxsplit=1)
     beats = int(beats_text)
@@ -108,6 +116,101 @@ def expected_measure_ticks(divisions: int, beats: int, beat_type: int) -> int:
             f"Time signature {beats}/{beat_type} is incompatible with divisions={divisions}"
         )
     return numerator // beat_type
+
+
+def preview_forward_gap_repair(
+    measure: ET.Element,
+    expected_ticks: int,
+) -> ForwardGapRepair:
+    """Shorten one unambiguous explicit forward gap to remove lane overflow."""
+    candidate = copy.deepcopy(measure)
+    layout, error = _collect_lane_layout(candidate)
+    if layout is None:
+        return ForwardGapRepair(applied=False, reason=error)
+
+    overflowing = {
+        lane: length - expected_ticks
+        for lane, length in layout.lane_lengths.items()
+        if length > expected_ticks
+    }
+    if not overflowing:
+        return ForwardGapRepair(applied=False, reason="小节没有由空隙造成的越界")
+
+    lane_note_totals: defaultdict[tuple[str, str], int] = defaultdict(int)
+    for child in candidate:
+        if child.tag != "note" or child.find("chord") is not None:
+            continue
+        lane_note_totals[_note_lane_key(child)] += _timing_duration(child)
+    overflowing = {
+        lane: overflow
+        for lane, overflow in overflowing.items()
+        if lane_note_totals[lane] == expected_ticks
+    }
+    if not overflowing:
+        return ForwardGapRepair(
+            applied=False,
+            reason="音符和休止符总时值未精确覆盖目标小节容量",
+        )
+
+    next_note_lane: list[tuple[str, str] | None] = [None] * len(candidate)
+    upcoming_lane: tuple[str, str] | None = None
+    for index in range(len(candidate) - 1, -1, -1):
+        next_note_lane[index] = upcoming_lane
+        if candidate[index].tag == "note":
+            upcoming_lane = _note_lane_key(candidate[index])
+
+    active_lane: tuple[str, str] | None = None
+    forward_candidates: list[tuple[int, ET.Element, tuple[str, str], int]] = []
+    for index, child in enumerate(candidate):
+        if child.tag == "note":
+            active_lane = _note_lane_key(child)
+        elif child.tag == "forward":
+            lane = next_note_lane[index] or active_lane
+            duration = _timing_duration(child)
+            if lane in overflowing and duration > 0:
+                forward_candidates.append((index, child, lane, duration))
+
+    viable = [
+        item
+        for item in forward_candidates
+        if item[3] >= overflowing[item[2]]
+    ]
+    if len(viable) != 1:
+        return ForwardGapRepair(
+            applied=False,
+            reason="存在多个可调整空隙，无法唯一确定修复位置"
+            if viable
+            else "没有足够长的显式空隙可以消除越界",
+        )
+
+    index, forward, lane, duration = viable[0]
+    reduction = overflowing[lane]
+    new_duration = duration - reduction
+    duration_node = forward.find("duration")
+    if duration_node is None:
+        return ForwardGapRepair(
+            applied=False,
+            reductions=((index, duration, new_duration),),
+            reason="forward 缺少 duration 节点",
+        )
+    if new_duration == 0:
+        candidate.remove(forward)
+    else:
+        duration_node.text = str(new_duration)
+    repaired_layout, repaired_error = _collect_lane_layout(candidate)
+    if repaired_layout is None or any(
+        length > expected_ticks for length in repaired_layout.lane_lengths.values()
+    ):
+        return ForwardGapRepair(
+            applied=False,
+            reductions=((index, duration, new_duration),),
+            reason=repaired_error or "缩短空隙后小节仍然越界",
+        )
+    return ForwardGapRepair(
+        applied=True,
+        reductions=((index, duration, new_duration),),
+        measure=candidate,
+    )
 
 
 def measure_cursor_extent(measure: ET.Element) -> int:
@@ -182,6 +285,7 @@ def apply_deterministic_timing_decisions(
     for decision in decisions:
         if decision.get("action") != "correct" or decision.get("kind") not in {
             "timing_measure_overflow",
+            "timing_cursor_invalid",
             "timing_notation_mismatch",
         }:
             continue
@@ -202,12 +306,19 @@ def apply_deterministic_timing_decisions(
             divisions = find_measure_divisions(measure, divisions)
         measure = measures[measure_number - 1]
         beats, beat_type = plan.time_signature_for(measure_number)
-        repair = preview_deterministic_timing_repair(
-            measure,
-            divisions,
-            beats,
-            beat_type,
-        )
+        suggestion = decision.get("suggestion")
+        if isinstance(suggestion, Mapping) and suggestion.get("action") == "repair_gap":
+            repair = preview_forward_gap_repair(
+                measure,
+                expected_measure_ticks(divisions, beats, beat_type),
+            )
+        else:
+            repair = preview_deterministic_timing_repair(
+                measure,
+                divisions,
+                beats,
+                beat_type,
+            )
         if not repair.applied or repair.measure is None:
             raise ValueError(
                 f"timing repair is no longer deterministic: {part_id} measure {measure_number}"

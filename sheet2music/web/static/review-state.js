@@ -15,13 +15,14 @@
     if (!suggestion || typeof suggestion !== "object" || suggestion.action === "review") return false;
     return Object.prototype.hasOwnProperty.call(suggestion, "signature")
       || Object.prototype.hasOwnProperty.call(suggestion, "sign")
-      || suggestion.action === "compress";
+      || suggestion.action === "compress"
+      || suggestion.action === "repair_gap";
   }
 
   function actionsForFinding(finding) {
     return Array.isArray(finding && finding.available_actions)
-      ? finding.available_actions.filter((action) => ["preserve", "correct", "reidentify"].includes(action))
-      : ["preserve", "correct", "reidentify"];
+      ? finding.available_actions.filter((action) => ["preserve", "correct", "reidentify", "ignore"].includes(action))
+      : ["preserve", "correct", "reidentify", "ignore"];
   }
 
   function suggestedReviewActions(findings) {
@@ -94,21 +95,32 @@
     const needsUpload = batches.filter((batch) => (
       batch.status === "needs_upload" || batch.status === "failed"
     )).length;
+    const acceptedOriginal = batches.filter((batch) => batch.status === "accepted_original").length;
     const total = batches.length;
+    const acceptedText = acceptedOriginal
+      ? `已允许保留原始识别 ${acceptedOriginal} 个`
+      : "";
     return {
       total,
       resolved,
       needsChoice,
       needsUpload,
-      text: `已检查 ${total} 个谱表区域：自动解决 ${resolved} 个，需要选择 ${needsChoice} 个，仍需补充图片 ${needsUpload} 个。`,
+      acceptedOriginal,
+      text: `已检查 ${total} 个谱表区域：自动解决 ${resolved} 个，需要选择 ${needsChoice} 个，仍需补充图片 ${needsUpload} 个${acceptedText ? `，${acceptedText}` : ""}。`,
     };
   }
 
-  function autoReviewReady(autoResolution, manualActions, regionUploadBusy = false) {
+  function autoReviewReady(autoResolution, manualActions, regionUploadBusy = false, ignoredMeasures = []) {
     const batches = Array.isArray(autoResolution && autoResolution.batches)
       ? autoResolution.batches
       : [];
-    const automaticReady = batches.every((batch) => batch.status === "auto_resolved");
+    const ignored = new Set(ignoredMeasures);
+    const automaticReady = batches.every((batch) => (
+      batch.status === "auto_resolved"
+      || batch.status === "accepted_original"
+      || ((batch.status === "needs_upload" || batch.status === "failed")
+        && (batch.target_measures || []).every((measure) => ignored.has(measure)))
+    ));
     const manualReady = manualActions.every((action) => Boolean(action) && action !== "reidentify");
     return automaticReady && manualReady && !regionUploadBusy;
   }
@@ -116,7 +128,7 @@
   function batchActions(batch) {
     if (!batch || typeof batch !== "object") return [];
     if (batch.status === "needs_choice") return ["select", "retry"];
-    if (batch.status === "needs_upload" || batch.status === "failed") return ["upload"];
+    if (batch.status === "needs_upload" || batch.status === "failed") return ["upload", "ignore"];
     return [];
   }
 
@@ -136,6 +148,13 @@
     context_anchor_mismatch: "相邻正常小节与原谱不一致",
     visual_notehead_mismatch: "音符数量与图像检测结果差异过大",
   };
+
+  function batchFailureReasons(batch) {
+    const reasons = Array.isArray(batch && batch.failure_reasons)
+      ? batch.failure_reasons
+      : [];
+    return reasons.map((reason) => candidateReasons[reason] || "候选未通过安全检查");
+  }
 
   function candidateSummaryText(candidate) {
     const variant = candidate && candidate.variant;
@@ -170,6 +189,7 @@
     autoReviewReady,
     batchActions,
     candidateSummaryText,
+    batchFailureReasons,
   };
   global.Sheet2MusicReviewState = api;
   if (typeof module !== "undefined") module.exports = api;

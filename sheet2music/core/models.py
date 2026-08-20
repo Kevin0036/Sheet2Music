@@ -65,6 +65,7 @@ class ConvertParams:
     transkun_model: str = "v2"
     has_pickup_measure: bool = False
     structure_plan: dict[str, object] | None = None
+    generate_pdf: bool = False
 
     @classmethod
     def validate(
@@ -76,6 +77,7 @@ class ConvertParams:
         structure_plan: object = None,
         has_pickup_measure: object = False,
         transkun_model: object = "v2",
+        generate_pdf: object = False,
     ) -> "ConvertParams":
         validated_bpm = validate_bpm(bpm)
         parse_time_signature(str(time_signature))
@@ -84,6 +86,8 @@ class ConvertParams:
             raise ValidationError(f"use_gpu 必须是布尔值，收到: {use_gpu!r}")
         if not isinstance(has_pickup_measure, bool):
             raise ValidationError("has_pickup_measure 必须是布尔值")
+        if not isinstance(generate_pdf, bool):
+            raise ValidationError("generate_pdf 必须是布尔值")
         if transkun_model not in {"v2", "v2_aug"}:
             raise ValidationError(f"未知的 Transkun 模型: {transkun_model!r}")
         validated_structure_plan: dict[str, object] | None = None
@@ -109,6 +113,7 @@ class ConvertParams:
             transkun_model=str(transkun_model),
             has_pickup_measure=has_pickup_measure,
             structure_plan=validated_structure_plan,
+            generate_pdf=generate_pdf,
         )
 
     def to_dict(self) -> dict[str, object]:

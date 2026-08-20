@@ -33,6 +33,7 @@ class ConvertRequest(BaseModel):
     use_gpu: bool = False
     transkun_model: str = "v2"
     has_pickup_measure: bool = False
+    generate_pdf: bool = False
 
 
 class ReviewRequest(BaseModel):
@@ -129,7 +130,14 @@ def start_conversion(request: ConvertRequest) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="任务不存在")
     try:
         if record.input_kind in {"audio", "video_url"}:
-            params = ConvertParams.validate(120, "4/4", ["midi", "mp3"], request.use_gpu, transkun_model=request.transkun_model)
+            params = ConvertParams.validate(
+                120,
+                "4/4",
+                ["midi", "mp3"],
+                request.use_gpu,
+                transkun_model=request.transkun_model,
+                generate_pdf=request.generate_pdf,
+            )
         else:
             params = ConvertParams.validate(
                 request.bpm,
@@ -137,6 +145,7 @@ def start_conversion(request: ConvertRequest) -> dict[str, object]:
                 request.outputs,
                 request.use_gpu,
                 has_pickup_measure=request.has_pickup_measure,
+                generate_pdf=False,
             )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

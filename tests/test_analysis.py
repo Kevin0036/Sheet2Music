@@ -139,6 +139,31 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(finding.suggestion["corrected_note_count"], 1)
         self.assertEqual(finding.suggestion["resulting_beats"], "4")
 
+    def test_overflow_prefers_repairing_an_explicit_gap(self) -> None:
+        measure = _measure(1, signature="4/4", duration=4)
+        note = measure.find("note")
+        assert note is not None
+        measure.remove(note)
+        first = ET.SubElement(measure, "note")
+        ET.SubElement(first, "duration").text = "8"
+        ET.SubElement(first, "voice").text = "1"
+        ET.SubElement(first, "staff").text = "1"
+        ET.SubElement(measure, "forward").append(ET.Element("duration"))
+        measure.find("forward/duration").text = "12"
+        second = ET.SubElement(measure, "note")
+        ET.SubElement(second, "duration").text = "8"
+        ET.SubElement(second, "voice").text = "1"
+        ET.SubElement(second, "staff").text = "1"
+
+        report = analyze_musicxml_tree(
+            _score_with_part(measure),
+            ScoreStructurePlan.from_dict({}),
+        )
+
+        finding = next(item for item in report.findings if item.kind == "timing_measure_overflow")
+        self.assertEqual(finding.suggestion["action"], "repair_gap")
+        self.assertEqual(finding.available_actions, ["correct", "reidentify"])
+
     def test_negative_cursor_is_a_specific_timing_risk(self) -> None:
         measure = _measure(1, signature="4/4", duration=16)
         measure.insert(1, ET.fromstring("<backup><duration>4</duration></backup>"))

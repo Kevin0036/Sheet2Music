@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -35,6 +36,8 @@ class TimedNote:
     staff: int | None
     is_chord: bool
     is_grace: bool
+    gap_before_units: int = 0
+    gap_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,18 @@ def analyze_measure(
     cursor = 0
     maximum_note_end = 0
     previous_non_chord_onset = 0
+    lane_last_end: dict[tuple[str, str], int] = {}
+    pending_forward: defaultdict[tuple[str, str], int] = defaultdict(int)
+    next_note_lane: list[tuple[str, str] | None] = [None] * len(measure)
+    upcoming_lane: tuple[str, str] | None = None
+    for index in range(len(measure) - 1, -1, -1):
+        next_note_lane[index] = upcoming_lane
+        if measure[index].tag == "note":
+            upcoming_lane = (
+                measure[index].findtext("staff", "1"),
+                measure[index].findtext("voice", "1"),
+            )
+    active_lane: tuple[str, str] | None = None
     events: list[TimedNote] = []
     diagnostics: list[TimingDiagnostic] = []
 
@@ -130,6 +145,13 @@ def analyze_measure(
                 previous_non_chord_onset = onset
             end = onset + duration
             staff = _positive_int(child.findtext("staff"))
+            lane = (child.findtext("staff", "1"), child.findtext("voice", "1"))
+            previous_end = lane_last_end.get(lane, 0)
+            gap_before = max(0, onset - previous_end) if not is_chord else 0
+            gap_source = None
+            if gap_before:
+                gap_source = "forward" if pending_forward[lane] else "implicit"
+            pending_forward[lane] = 0
             events.append(
                 TimedNote(
                     element=child,
@@ -140,13 +162,21 @@ def analyze_measure(
                     staff=staff,
                     is_chord=is_chord,
                     is_grace=is_grace,
+                    gap_before_units=gap_before,
+                    gap_source=gap_source,
                 )
             )
+            lane_last_end[lane] = max(previous_end, end)
+            active_lane = lane
             maximum_note_end = max(maximum_note_end, end)
             if not is_chord and not is_grace:
                 cursor = end
         elif child.tag in {"backup", "forward"}:
             duration = _duration(child, child_index, diagnostics)
+            if child.tag == "forward":
+                target_lane = next_note_lane[child_index] or active_lane
+                if target_lane is not None:
+                    pending_forward[target_lane] += duration
             cursor += -duration if child.tag == "backup" else duration
             if cursor < 0:
                 diagnostics.append(

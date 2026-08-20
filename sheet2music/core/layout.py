@@ -98,6 +98,8 @@ def annotate_page_layout_with_printed_numbers(
     page: PageLayout,
     raw_page_path: Path,
     reader,
+    *,
+    has_pickup_measure: bool = False,
 ) -> PageLayout:
     """Attach printed row numbers when OCR can establish one consistent offset."""
     image = cv2.imread(str(raw_page_path), cv2.IMREAD_COLOR)
@@ -130,14 +132,27 @@ def annotate_page_layout_with_printed_numbers(
         )
     except ValueError:
         return page
+    anchored_systems = {anchor.system_index for anchor in anchors}
     return replace(
         page,
         systems=tuple(
             replace(
                 system,
-                display_measure_start=mapping.display_for_ordinal(system.global_measure_start),
-                display_measure_end=mapping.display_for_ordinal(system.global_measure_end),
-                number_mapping_confidence=mapping.confidence,
+                display_measure_start=(
+                    mapping.display_for_ordinal(system.global_measure_start)
+                    if has_pickup_measure or system.system_index in anchored_systems
+                    else None
+                ),
+                display_measure_end=(
+                    mapping.display_for_ordinal(system.global_measure_end)
+                    if has_pickup_measure or system.system_index in anchored_systems
+                    else None
+                ),
+                number_mapping_confidence=(
+                    mapping.confidence
+                    if has_pickup_measure or system.system_index in anchored_systems
+                    else "unknown"
+                ),
             )
             for system in page.systems
         ),
@@ -247,7 +262,7 @@ def group_overflow_findings(
     selected_systems: dict[tuple[int, int], ScoreSystem] = {}
     for finding in findings:
         if (
-            finding.get("kind") != "timing_measure_overflow"
+            finding.get("kind") not in {"timing_measure_overflow", "timing_cursor_invalid"}
             or finding.get("severity") != "high"
         ):
             continue

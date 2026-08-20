@@ -17,6 +17,9 @@ MIN_METER_AGREEMENT = 0.60
 MIN_BEATS_PER_BAR = 2
 MAX_BEATS_PER_BAR = 12
 DOWNBEAT_MATCH_FRACTION = 0.35
+CONSTANT_TEMPO_RESIDUAL_FRACTION = 0.05
+MIN_LOCAL_BPM = 20.0
+MAX_LOCAL_BPM = 400.0
 
 
 class BeatThisGridError(RuntimeError):
@@ -109,6 +112,37 @@ def _infer_time_signature(times: np.ndarray, positions: np.ndarray, downbeats: n
     return [int(values[winner]), 4], accepted
 
 
+def _build_variable_tempo_map(
+    times: np.ndarray,
+    positions: np.ndarray,
+    interval_counts: np.ndarray,
+    *,
+    residual_rms: float,
+    seconds_per_beat: float,
+) -> list[list[float]]:
+    """Expose Beat This local tempo changes without moving note events."""
+
+    if residual_rms <= CONSTANT_TEMPO_RESIDUAL_FRACTION * seconds_per_beat:
+        return []
+    gaps = np.diff(times)
+    local_bpms = 60.0 * interval_counts.astype(float) / gaps
+    if not np.all(np.isfinite(local_bpms)):
+        raise BeatThisGridError("Beat This variable-tempo grid contains non-finite BPM values")
+    invalid = local_bpms[(local_bpms < MIN_LOCAL_BPM) | (local_bpms > MAX_LOCAL_BPM)]
+    if invalid.size:
+        raise BeatThisGridError(
+            "Beat This variable-tempo grid contains implausible local BPM values: "
+            f"{invalid.tolist()}"
+        )
+    tempo_map: list[list[float]] = [[0.0, float(local_bpms[0])]]
+    for interval_index in range(1, local_bpms.size):
+        bpm = float(local_bpms[interval_index])
+        if math.isclose(bpm, tempo_map[-1][1], rel_tol=1e-9, abs_tol=1e-9):
+            continue
+        tempo_map.append([float(times[interval_index]), bpm])
+    return tempo_map if len(tempo_map) >= 2 else []
+
+
 def analyze_beat_this_grid(beats: Sequence[float], downbeats: Sequence[float]) -> dict[str, object]:
     """Clean Beat This marks and infer global BPM/meter without moving notes."""
 
@@ -121,6 +155,14 @@ def analyze_beat_this_grid(beats: Sequence[float], downbeats: Sequence[float]) -
         raise BeatThisGridError("Beat-position regression produced an invalid tempo")
     residuals = cleaned - (float(intercept) + float(slope) * positions)
     time_signature, accepted_downbeats = _infer_time_signature(cleaned, positions, raw_downbeats)
+    residual_rms = float(np.sqrt(np.mean(np.square(residuals))))
+    tempo_map = _build_variable_tempo_map(
+        cleaned,
+        positions,
+        interval_counts,
+        residual_rms=residual_rms,
+        seconds_per_beat=float(slope),
+    )
     return {
         "schema_version": 2,
         "raw_beats": raw_beats.tolist(),
@@ -128,11 +170,12 @@ def analyze_beat_this_grid(beats: Sequence[float], downbeats: Sequence[float]) -
         "beats": cleaned.tolist(),
         "downbeats": accepted_downbeats,
         "estimated_bpm": 60.0 / float(slope),
+        "tempo_map": tempo_map,
         "time_signature": time_signature,
         "cleanup": {
             "removed_duplicates": removed_duplicates,
             "recovered_missing_beats": recovered_missing_beats,
-            "residual_rms_seconds": float(np.sqrt(np.mean(np.square(residuals)))),
+            "residual_rms_seconds": residual_rms,
             "interval_beat_counts": interval_counts.tolist(),
         },
     }

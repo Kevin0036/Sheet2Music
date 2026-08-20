@@ -136,7 +136,11 @@ class AudioTranscriptionTest(unittest.TestCase):
             seen: dict[str, Path] = {}
 
             def transcode(_source: Path, target: Path) -> Path:
-                target.touch()
+                with wave.open(str(target), "wb") as stream:
+                    stream.setnchannels(2)
+                    stream.setsampwidth(2)
+                    stream.setframerate(44100)
+                    stream.writeframes(b"\0" * 44100 * 2 * 2)
                 return target
 
             def detect(wav_path: Path, output_path: Path, **_kwargs: object) -> Path:
@@ -176,22 +180,90 @@ class AudioTranscriptionTest(unittest.TestCase):
                 midi.touch()
                 return midi
 
+            def transcode(_source: Path, target: Path) -> Path:
+                with wave.open(str(target), "wb") as stream:
+                    stream.setnchannels(2)
+                    stream.setsampwidth(2)
+                    stream.setframerate(44100)
+                    stream.writeframes(b"\0" * 44100 * 2 * 2)
+                return target
+
             def normalize(source: Path, destination: Path, **_kwargs: object) -> Path:
                 self.assertEqual(source, workspace.output_dir / "score.raw.mid")
                 destination.touch()
                 return destination
 
-            with mock.patch.object(audio_transcription, "transcode_input_to_wav", side_effect=lambda _source, target: target.touch() or target):
+            with mock.patch.object(audio_transcription, "transcode_input_to_wav", side_effect=transcode):
                 with mock.patch.object(audio_transcription, "detect_beats", side_effect=detect):
                     with mock.patch.object(audio_transcription, "run_transkun", side_effect=transkun):
                         with mock.patch.object(audio_transcription, "rewrite_midi_metadata_preserving_seconds", side_effect=normalize):
                             with mock.patch.object(audio_transcription, "validate_transkun_midi"):
-                                with mock.patch.object(audio_transcription, "render_mp3", side_effect=lambda midi, _mp3: rendered.append(midi)):
+                                with mock.patch.object(
+                                    audio_transcription,
+                                    "render_mp3",
+                                    side_effect=lambda midi, _mp3, **kwargs: rendered.append(midi)
+                                    or self.assertEqual(kwargs["target_duration"], 1.0),
+                                ):
                                     report = audio_transcription.run_audio_transcription(workspace, use_gpu=False)
 
             self.assertTrue((workspace.output_dir / "score.raw.mid").exists())
             self.assertEqual(rendered, [workspace.output_dir / "score.mid"])
             self.assertEqual(report["midi"], "output/score.mid")
+
+    def test_audio_pipeline_can_render_piano_score_pdf_from_normalized_midi(self) -> None:
+        from sheet2music.core import audio_transcription
+        from sheet2music.core.workspace import JobWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = JobWorkspace(Path(temp_dir) / "job").create()
+            workspace.audio_path.touch()
+
+            def transcode(_source: Path, target: Path) -> Path:
+                with wave.open(str(target), "wb") as stream:
+                    stream.setnchannels(2)
+                    stream.setsampwidth(2)
+                    stream.setframerate(44100)
+                    stream.writeframes(b"\0" * 44100 * 2 * 2)
+                return target
+
+            def detect(_wav: Path, output: Path, **_kwargs: object) -> Path:
+                output.write_text('{"estimated_bpm": 90}', encoding="utf-8")
+                return output
+
+            def transkun(_audio: Path, midi: Path, **_kwargs: object) -> Path:
+                midi.touch()
+                return midi
+
+            with mock.patch.object(audio_transcription, "transcode_input_to_wav", side_effect=transcode):
+                with mock.patch.object(audio_transcription, "detect_beats", side_effect=detect):
+                    with mock.patch.object(audio_transcription, "run_transkun", side_effect=transkun):
+                        with mock.patch.object(
+                            audio_transcription,
+                            "rewrite_midi_metadata_preserving_seconds",
+                            side_effect=lambda _source, destination, **_kwargs: destination.touch() or destination,
+                        ):
+                            with mock.patch.object(audio_transcription, "validate_transkun_midi"):
+                                with mock.patch.object(audio_transcription, "render_mp3"):
+                                    with mock.patch.object(
+                                        audio_transcription,
+                                        "split_midi_for_piano_notation",
+                                        return_value=mock.MagicMock(to_dict=lambda: {"split_note": 60}),
+                                    ) as split_midi:
+                                        with mock.patch.object(audio_transcription, "export_pdf") as export_pdf:
+                                            report = audio_transcription.run_audio_transcription(
+                                                workspace,
+                                                use_gpu=False,
+                                                generate_pdf=True,
+                                            )
+
+        split_midi.assert_called_once_with(
+            workspace.output_dir / "score.mid",
+            workspace.output_dir / "score.notation.mid",
+        )
+        export_pdf.assert_called_once_with(workspace.output_dir / "score.notation.mid", workspace.output_dir / "score.pdf")
+        self.assertEqual(report["pdf"], "output/score.pdf")
+        self.assertEqual(report["notation_midi"], "output/score.notation.mid")
+        self.assertEqual(report["notation_hand_split"], {"split_note": 60})
 
     def test_builds_real_transkun_v2_command(self) -> None:
         from sheet2music.core.audio_transcription import build_transkun_command

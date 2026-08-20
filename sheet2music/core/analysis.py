@@ -6,7 +6,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .repair import find_measure_divisions, preview_deterministic_timing_repair
+from .repair import (
+    find_measure_divisions,
+    preview_deterministic_timing_repair,
+    preview_forward_gap_repair,
+)
 from .structure import ScoreStructurePlan, coerce_structure_plan
 from .timeline import analyze_measure, fraction_text, units_to_beats
 
@@ -322,6 +326,31 @@ def _analyze_part_timing(
             "affected_staffs": affected_staffs,
         }
         if timeline.diagnostics:
+            gap_repair = preview_forward_gap_repair(measure, timeline.expected_units)
+            if gap_repair.applied and gap_repair.measure is not None:
+                repaired_timeline = analyze_measure(
+                    gap_repair.measure,
+                    divisions,
+                    beats,
+                    beat_type,
+                )
+                suggestion = {
+                    "action": "repair_gap",
+                    "reductions": [
+                        {"child_index": index, "from_units": old, "to_units": new}
+                        for index, old, new in gap_repair.reductions
+                    ],
+                    "resulting_beats": fraction_text(
+                        units_to_beats(
+                            repaired_timeline.maximum_note_end_units,
+                            divisions,
+                        )
+                    ),
+                }
+                available_actions = ["correct", "reidentify"]
+            else:
+                suggestion = {"action": "reidentify"}
+                available_actions = ["reidentify"]
             report.findings.append(
                 _finding(
                     kind="timing_cursor_invalid",
@@ -333,41 +362,63 @@ def _analyze_part_timing(
                         **common_observed,
                         "diagnostics": [item.code for item in timeline.diagnostics],
                     },
-                    suggestion={"action": "reidentify"},
+                    suggestion=suggestion,
                     reason="MusicXML 时间游标结构无效，无法可靠确定音符起点",
-                    available_actions=["reidentify"],
+                    available_actions=available_actions,
                 )
             )
             continue
         if timeline.has_overflow:
-            repair = preview_deterministic_timing_repair(
-                measure,
-                divisions,
-                beats,
-                beat_type,
-            )
-            if repair.applied and repair.measure is not None:
-                repaired_timeline = analyze_measure(
-                    repair.measure,
-                    divisions,
-                    beats,
-                    beat_type,
-                )
-                suggestion: dict[str, object] = {
-                    "action": "compress",
-                    "corrected_note_count": len(repair.corrections),
-                    "corrections": [
-                        {"note_index": index, "from_units": old, "to_units": new}
-                        for index, old, new in repair.corrections
+            gap_repair = preview_forward_gap_repair(measure, timeline.expected_units)
+            if gap_repair.applied and gap_repair.measure is not None:
+                suggestion = {
+                    "action": "repair_gap",
+                    "reductions": [
+                        {"child_index": index, "from_units": old, "to_units": new}
+                        for index, old, new in gap_repair.reductions
                     ],
                     "resulting_beats": fraction_text(
-                        units_to_beats(repaired_timeline.maximum_note_end_units, divisions)
+                        units_to_beats(
+                            analyze_measure(
+                                gap_repair.measure,
+                                divisions,
+                                beats,
+                                beat_type,
+                            ).maximum_note_end_units,
+                            divisions,
+                        )
                     ),
                 }
                 available_actions = ["correct", "reidentify"]
             else:
-                suggestion = {"action": "reidentify"}
-                available_actions = ["reidentify"]
+                repair = preview_deterministic_timing_repair(
+                    measure,
+                    divisions,
+                    beats,
+                    beat_type,
+                )
+                if repair.applied and repair.measure is not None:
+                    repaired_timeline = analyze_measure(
+                        repair.measure,
+                        divisions,
+                        beats,
+                        beat_type,
+                    )
+                    suggestion = {
+                        "action": "compress",
+                        "corrected_note_count": len(repair.corrections),
+                        "corrections": [
+                            {"note_index": index, "from_units": old, "to_units": new}
+                            for index, old, new in repair.corrections
+                        ],
+                        "resulting_beats": fraction_text(
+                            units_to_beats(repaired_timeline.maximum_note_end_units, divisions)
+                        ),
+                    }
+                    available_actions = ["correct", "reidentify"]
+                else:
+                    suggestion = {"action": "reidentify"}
+                    available_actions = ["reidentify"]
             report.findings.append(
                 _finding(
                     kind="timing_measure_overflow",

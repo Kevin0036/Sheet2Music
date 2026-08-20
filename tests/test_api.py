@@ -58,6 +58,25 @@ def _fresh_store(base: Path):
 
 
 class JobPersistenceTest(unittest.TestCase):
+    def test_store_restores_audio_pdf_export_option(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir) / "jobs"
+            first = _fresh_store(base)
+            record = first.create("song.mp3", input_kind="audio")
+            record.params = ConvertParams(
+                bpm=120,
+                time_signature="4/4",
+                outputs=["midi", "mp3"],
+                generate_pdf=True,
+            )
+            first.save(record)
+
+            restored = _fresh_store(base).get(record.job_id)
+
+        assert restored is not None
+        assert restored.params is not None
+        self.assertTrue(restored.params.generate_pdf)
+
     def test_restart_refreshes_exhausted_automatic_batches_in_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir) / "jobs"
@@ -392,6 +411,20 @@ class ApiValidationTest(ApiTest):
 
         run_audio.assert_called_once()
         self.assertEqual(record.status, JobStatus.COMPLETED)
+
+    def test_audio_conversion_forwards_piano_score_pdf_option(self) -> None:
+        record = web_app.store.create("song.mp3", input_kind="audio")
+        record.workspace.audio_path.write_bytes(b"ID3")
+        web_app.store.save(record)
+        with mock.patch("sheet2music.web.jobs.run_audio_transcription", return_value={"status": "completed"}) as run_audio:
+            response = self.client.post("/api/convert", json={"job_id": record.job_id, "generate_pdf": True})
+            self.assertEqual(response.status_code, 200, response.text)
+            for _ in range(100):
+                if record.status == JobStatus.COMPLETED:
+                    break
+                time.sleep(0.01)
+
+        self.assertTrue(run_audio.call_args.kwargs["generate_pdf"])
 
     def test_upload_rejects_non_pdf(self) -> None:
         resp = self.client.post("/api/preview", files={"file": ("a.txt", b"hello", "text/plain")})

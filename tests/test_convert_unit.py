@@ -275,6 +275,7 @@ class ConvertUnitTest(unittest.TestCase):
             self.assertTrue(run_homr.call_args.kwargs["use_gpu"])
         finally:
             workspace.cleanup()
+            self._temp_dir.cleanup()
 
     def test_preparation_collects_page_layout_sidecars(self) -> None:
         workspace = self._workspace()
@@ -535,6 +536,34 @@ class ConvertUnitTest(unittest.TestCase):
             )
         finally:
             workspace.cleanup()
+
+    def test_finalize_renders_pdf_mp3_from_normalized_midi(self) -> None:
+        workspace = self._workspace()
+        try:
+            raw_path = workspace.output_dir / "score.raw.musicxml"
+            raw_path.write_text("<score-partwise/>", encoding="utf-8")
+            params = ConvertParams(bpm=80, time_signature="4/4", outputs=["midi", "mp3"])
+            preparation = {
+                "status": "awaiting_review",
+                "num_parts": 1,
+                "num_measures": 1,
+                "combined_musicxml_raw": "output/score.raw.musicxml",
+                "analysis": {"requires_review": True},
+            }
+            with mock.patch("sheet2music.core.convert.fix_musicxml_file", side_effect=_fake_fix), mock.patch(
+                "sheet2music.core.convert.export_midi", side_effect=_fake_export
+            ), mock.patch("sheet2music.core.convert.fix_midi_file", side_effect=_fake_fix_midi), mock.patch(
+                "sheet2music.core.convert.render_mp3"
+            ) as render_mp3:
+                finalize_conversion(workspace, params, preparation)
+
+            render_mp3.assert_called_once_with(
+                workspace.output_dir / "score.mid",
+                workspace.output_dir / "score.mp3",
+            )
+        finally:
+            workspace.cleanup()
+            self._temp_dir.cleanup()
 
     def test_finalize_uses_region_candidate_and_keeps_raw_xml(self) -> None:
         workspace = self._workspace()

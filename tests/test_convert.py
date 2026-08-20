@@ -92,6 +92,26 @@ class NautilusStructureFixtureTest(unittest.TestCase):
                 repair.ScoreStructurePlan.from_dict({}),
             )
 
+    def test_accepted_original_overflow_can_pass_with_explicit_allowlist(self) -> None:
+        root = ET.fromstring(
+            """
+            <score-partwise version="4.0">
+              <part id="P1">
+                <measure number="72">
+                  <attributes><divisions>4</divisions></attributes>
+                  <note><rest/><duration>20</duration><voice>1</voice></note>
+                </measure>
+              </part>
+            </score-partwise>
+            """
+        )
+
+        validate_musicxml_boundaries(
+            root,
+            repair.ScoreStructurePlan.from_dict({}),
+            allowed_overflow_measures={1},
+        )
+
     def test_underfilled_measure_passes_export_boundary_validation(self) -> None:
         root = ET.fromstring(
             """

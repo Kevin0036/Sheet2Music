@@ -17,7 +17,7 @@ The first version is intentionally narrow:
 - continuous same-page workflow for repeated use
 - BPM supplied explicitly by the user
 - optional exports: `MusicXML`, `MIDI`, `MP3`
-- optional GPU request using HOMR `--gpu auto` with FP16 weights when CUDA is available
+- optional GPU request using HOMR `--gpu force` with FP16 weights; CUDA session failure is reported instead of silently falling back
 - designed to migrate into a standalone GitHub repository with minimal changes
 
 ## Context
@@ -152,8 +152,8 @@ checks. It should:
 
 - `BPM` is required and must be a positive integer
 - `Time signature` defaults to `4/4`
-- `Use GPU` is opt-in; checked means HOMR `--gpu auto`, which selects CUDA/FP16 when available
-  and otherwise keeps HOMR's CPU path
+- `Use GPU` is opt-in; checked means HOMR `--gpu force`, and the service verifies an active CUDA session before processing
+  while unchecked keeps HOMR's CPU path
 - at least one export format must be selected
 - parameter values apply to the current conversion only
 

@@ -26,8 +26,8 @@
 2. 使用 ffmpeg 转换为 44.1 kHz、双声道、PCM s16 WAV；Beat This 和 Transkun 始终读取同一个规范化文件。
 3. 使用 Beat This 检测 beats、downbeats 和估算 BPM，并保存 `audio/beats.json`。
 4. 调用 Transkun V2 生成 `output/score.mid`。
-5. 保留原始 Transkun MIDI 为 `score.raw.mid`。面向用户的 `score.mid` 只写入 Beat This 得到的全局 BPM 和高置信度拍号，保持其他 MIDI 事件的绝对播放秒不变；不量化、不移动、不增删音符，也不写可变速度图。
-6. 使用 MuseScore 将 MIDI 渲染为 WAV，再使用 ffmpeg 输出 `output/score.mp3`。
+5. 保留原始 Transkun MIDI 为 `score.raw.mid`。面向用户的 `score.mid` 写入 Beat This 的节拍网格 tempo map 和高置信度拍号，同时保持所有非 metadata MIDI 事件的绝对播放秒不变；不量化、不移动、不增删音符。
+6. 使用 FluidSynth 2.5.6 与官方 MuseScore General SoundFont 渲染 MIDI 为 `44.1 kHz / 双声道 / PCM16` WAV，再使用 ffmpeg 输出 `output/score.mp3`。音频/视频任务以规范化输入 WAV 的时长作为 transport 边界，裁剪合成器在 CC64 延音与混响后附加的自然尾音。
 7. 写入 `output/report.json`，清理临时 WAV。
 
 Transkun MIDI 只有在文件不可读取、没有音符、ticks_per_beat 无效或音符结束位置不合法时才会失败；正常节奏不会被修改。
@@ -37,12 +37,12 @@ Transkun MIDI 只有在文件不可读取、没有音符、ticks_per_beat 无效
 - `POST /api/preview`：继续只接受 PDF，并执行首页预览。
 - `POST /api/audio`：接受单个 `.mp3`，限制 50 MB，创建 `input_kind=audio` 的任务。
 - `POST /api/video-url`：接受 YouTube/Bilibili URL，创建 `input_kind=video_url` 的任务。
-- `POST /api/convert`：PDF 使用原有 BPM、拍号和输出选项；音频忽略 BPM/拍号输入，固定生成 MIDI 与回渲染 MP3。
+- `POST /api/convert`：PDF 使用原有 BPM、拍号和输出选项；音频忽略 BPM/拍号输入，固定生成 MIDI 与回渲染 MP3。音频/视频还可传递 `generate_pdf=true`，在 MIDI 生成后以 MuseScore 导出钢琴谱 PDF；PDF 输入固定忽略该选项。
 - `GET /api/jobs/{id}` 与 artifacts 下载接口保持不变。
 
 任务状态增加音频阶段：
 
-`audio_uploaded` → `converting_audio` → `detecting_beats` → `running_transkun` → `rendering_mp3` → `completed` / `failed`
+`audio_uploaded` → `converting_audio` → `detecting_beats` → `running_transkun` → `rendering_mp3` → `rendering_pdf`（可选）→ `completed` / `failed`
 
 ## 运行配置
 
@@ -68,6 +68,8 @@ Beat This 必须安装在可被当前 Python 或 Transkun 环境访问的环境�
   output/score.raw.mid  # 原始 Transkun 结果，仅审计
   output/score.mid      # 写入 BPM/可用拍号的下载 MIDI
   output/score.mp3
+  output/score.pdf      # 仅在 generate_pdf=true 时生成
+  output/score.notation.mid # 仅制谱内部使用的左右手派生 MIDI，不下载
   output/report.json
 ```
 
@@ -139,3 +141,27 @@ Beat This 必须安装在可被当前 Python 或 Transkun 环境访问的环境�
 - 新增 `sheet2music.core.fluidsynth_renderer` 作为独立渲染接口。`render_midi_to_wav()` 可直接被后续 GUI 在线试听/编辑任务调用，不依赖 Web JobStore；`render_midi_to_mp3()` 负责下载产物。
 - FluidSynth runtime、SoundFont 版本/大小/SHA-256 均在环境状态中校验。渲染器不重写 MIDI，因此 `CC64` 延音踏板和其他控制器会原样传给 FluidSynth；同时检查 44.1 kHz、双声道、PCM16 和末尾尾音覆盖。
 - 本机已下载并验证 FluidSynth 2.5.6 和官方 SoundFont。真实 FluidSynth WAV 渲染已成功；当前 Codex 沙箱账户执行 WinGet ffmpeg 时受 Windows ACL 拒绝，MP3 转码须由用户账户运行或通过 `SHEET2MUSIC_FFMPEG` 指向可执行的同目录 `ffmpeg.exe`。
+
+### 2026-08-20：音频 transport 边界与变速节拍图修正
+
+- 修正了 FluidSynth WAV 时长检查：现在按共享 MIDI tempo map 计算最后一个真实 channel event 的秒数，并忽略 `end_of_track` 的延迟；不再用固定 `120 BPM` 误判带 tempo metadata 的 MIDI。
+- 音频/视频任务在回渲染时以输入 WAV 的实际时长为 transport 边界。针对 `Yorushika - That's Why I Gave Up on Music`，旧下载 WAV 因 Transkun 的 CC64 末尾延音输出 `259.271s`（约 4:19）；修正后 MIDI 为 `242.497s`，下载 WAV 边界为原音频 `244.036s`（约 4:04）。
+- Beat This 的 `beats.json` 现包含仅用于 conductor metadata 的 beat-level `tempo_map`。该映射与参考项目相同：只把既有 Transkun 绝对秒重新表达成音乐 tick，绝不改变音符、踏板、控制器的实际播放时刻。
+- 真实 RTX 4060 验证已完成：同一首曲目的修正 MIDI 保持 `242.497s`，写入 `197` 个 tempo point 后仍保持秒级时序，FluidSynth WAV 精确输出 `244.035918s`。
+- 已用完整的 `Yorushika - That's Why I Gave Up on Music`（输入 `244.036s`）重新完成 GPU 端到端导出：`score.mid` 的最后事件为 `242.497s`，`score.wav` 为 `244.035918s`，ffmpeg 编码后的 `score.mp3` 为 `244.04s`。这证明原先约 `4:19` 的结果是 CC64 延音和混响尾部未受 transport 边界约束，并非 Beat This 把 Transkun 音符节奏放慢。
+- 修正 MP3 原子写入临时文件名为 `.score.part.mp3`（原为 `.score.mp3.part`）。保留 `.mp3` 后缀让 ffmpeg 正确推断输出容器，避免导出阶段出现 `FluidSynth WAV 过短` 修复后仍被临时文件格式错误阻断的情况。
+
+### 2026-08-20：Step 1 输出钢琴谱 PDF 收尾
+
+- MP3 与视频 URL 的输出栏新增“同时生成钢琴谱 PDF”选项；PDF 琴谱输入不显示该选项。任务参数使用持久化的 `generate_pdf` 布尔值，默认关闭。
+- 选择后，音频工作流在已规范化的 `output/score.mid` 完成回渲染后进入 `rendering_pdf`，由 MuseScore 导出 `output/score.pdf`；报告增加 `pdf` 字段，下载和 ZIP 产物收集支持 `pdf` 类型。
+- 新增 MuseScore PDF 导出、API 参数转发、音频流水线、工作区 artifact 的单元测试。PDF 路线的 MP3 回渲染也已修正为读取已导出的 `score.mid`，避免将 MusicXML 错当 MIDI。
+- FluidSynth 为 MP3 创建的 `output/score.wav` 现在在成功或失败后清理，不作为下载产物。
+
+### 2026-08-20：音频钢琴谱左右手分轨
+
+- Transkun 的单一钢琴轨道不含左手/右手语义；直接交给 MuseScore 导入时，自动分谱会把不同声部挤入不稳定的谱表。
+- 可选 PDF 输出现在先从下载用 `output/score.mid` 生成内部 `output/score.notation.mid`。拆分器只分析整曲 MIDI 音高分布，以最小化两组内部音高方差的确定性边界分配左右手；每个音符的 pitch、start tick、end tick、velocity 和 channel 均保持不变。
+- 派生文件命名为 `Piano Right Hand` 和 `Piano Left Hand` 两条钢琴轨道，MuseScore 因而稳定导入为大谱表。控制器会复制到两轨以保留制谱上下文；`score.notation.mid` 仅为内部中间文件，不列入下载或 ZIP。
+- `score.mid`、`score.raw.mid`、音频回渲染和 Transkun 识别结果均不会被该步骤修改。`report.json` 在生成 PDF 时记录派生文件和分界音高。
+- 已使用 `audio/Yorushika - Usotsuki Arrangement_piano_transkun.mid` 验收：2,363 个来源音符完整保留，分界为 MIDI 62，左手 1,140、右手 1,223；MuseScore 成功输出 8 页 A4 PDF，并经第一页可视检查确认高音/低音谱表分离。

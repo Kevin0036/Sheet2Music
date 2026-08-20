@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sheet2Music</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=step1-pdf-score" />
 </head>
 <body>
   <header class="topbar">
@@ -34,8 +34,10 @@
 
   <main class="layout">
     <section class="left">
-      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="上传 PDF 或 MP3">
-        <p class="dz-title">把 PDF 或 MP3 拖到这里，或点击选择文件</p>
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="上传 MP3 或 PDF">
+        <p class="dz-title"><strong>推荐上传 MP3</strong>，节奏识别效果更佳</p>
+        <p class="dz-fallback">PDF 琴谱作为备用输入，适合没有音频的情况</p>
+        <p class="dz-action">把文件拖到这里，或点击选择文件</p>
         <button id="pick-file" type="button">选择文件</button>
         <input id="file-input" type="file" accept="application/pdf,.pdf,audio/mpeg,.mp3" hidden />
         <div class="url-upload">
@@ -85,6 +87,11 @@
           <label class="checkbox"><input type="checkbox" value="mp3" /> MP3</label>
           <label class="checkbox"><input type="checkbox" value="zip" /> ZIP 打包</label>
         </fieldset>
+
+        <label id="piano-score-output" class="checkbox" hidden>
+          <input id="generate-pdf" type="checkbox" disabled />
+          同时生成钢琴谱 PDF
+        </label>
 
         <div class="actions">
           <button id="convert-btn" class="primary" disabled>开始转换</button>
