@@ -27,6 +27,7 @@ from ..core.auto_resolution import (
     validate_batch_candidate_artifact,
 )
 from ..core.convert import finalize_conversion, resume_automatic_resolution, run_conversion
+from ..core.audio_transcription import run_audio_transcription
 from ..core.homr import run_homr_on_page
 from ..core.models import ConvertParams, JobStatus
 from ..core.reidentify import run_region_reidentification, validate_region_request
@@ -103,7 +104,8 @@ def normalize_review_decisions(
     required = {
         finding_id
         for finding_id, finding in findings.items()
-        if finding.get("severity") == "high" and finding.get("status", "pending") != "resolved"
+        if finding.get("severity") == "high"
+        and finding.get("status", "pending") not in {"resolved", "accepted_original"}
     }
     normalized: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -116,11 +118,15 @@ def normalize_review_decisions(
             raise ReviewError("decision refers to an unknown finding")
         if finding_id in seen:
             raise ReviewError(f"duplicate decision for finding: {finding_id}")
-        if action not in {"preserve", "correct", "reidentify"}:
-            raise ReviewError("action must be preserve, correct, or reidentify")
+        if action not in {"preserve", "correct", "reidentify", "ignore"}:
+            raise ReviewError("action must be preserve, correct, reidentify, or ignore")
         finding = findings[finding_id]
         available_actions = finding.get("available_actions")
-        if isinstance(available_actions, list) and action not in available_actions:
+        if (
+            action != "ignore"
+            and isinstance(available_actions, list)
+            and action not in available_actions
+        ):
             raise ReviewError(
                 f"action {action!r} is not available for finding: {finding_id}"
             )
@@ -150,6 +156,7 @@ class JobRecord:
     review_decisions: list[dict[str, object]] = field(default_factory=list)
     progress: dict[str, object] | None = None
     filename: str = ""
+    input_kind: str = "pdf"
     created_at: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -159,6 +166,7 @@ class JobRecord:
             "stage": self.stage,
             "error": self.error,
             "filename": self.filename,
+            "input_kind": self.input_kind,
             "created_at": self.created_at,
             "params": self.params.to_dict() if self.params else None,
             "report": self.report,
@@ -194,6 +202,7 @@ class JobStore:
                         params_payload.get("outputs", []),
                         params_payload.get("use_gpu", False),
                         params_payload.get("structure_plan"),
+                        transkun_model=params_payload.get("transkun_model", "v2"),
                     )
                 status = JobStatus(str(payload.get("status", JobStatus.PENDING.value)))
                 error = payload.get("error") if isinstance(payload.get("error"), str) else None
@@ -229,6 +238,7 @@ class JobStore:
                     ),
                     progress=payload.get("progress") if isinstance(payload.get("progress"), dict) else None,
                     filename=str(payload.get("filename", "")),
+                    input_kind=str(payload.get("input_kind", "pdf")),
                     created_at=str(payload.get("created_at", "")),
                 )
                 self._jobs[record.job_id] = record
@@ -237,10 +247,11 @@ class JobStore:
                 if batch_state.exists() and candidate_path.exists():
                     batch_store = AutoResolutionStore(batch_state)
                     persisted_batches = batch_store.load()
-                    if any(
+                    has_pending_commit = any(
                         batch.status == BatchStatus.COMMITTING
                         for batch in persisted_batches
-                    ):
+                    )
+                    if has_pending_commit:
                         recovered_batches = recover_pending_commits(candidate_path, batch_store)
                         if interrupted_upload_recognition and any(
                             batch.status == BatchStatus.AUTO_RESOLVED
@@ -256,6 +267,11 @@ class JobStore:
                                 candidate_path,
                             )
                         )
+                    elif record.status == JobStatus.AWAITING_REVIEW and record.params is not None:
+                        # Refresh the persisted report after batch-state migration. In
+                        # particular, exhausted automatic candidates become accepted_original
+                        # and must disappear from the upload queue after a restart.
+                        self._refresh_auto_record(record, persisted_batches, candidate_path)
                 if resumable_automatic_stage:
                     if _can_resume_automatic(record):
                         resumable_records.append(record)
@@ -304,6 +320,7 @@ class JobStore:
             "stage": record.stage,
             "error": record.error,
             "filename": record.filename,
+            "input_kind": record.input_kind,
             "created_at": record.created_at,
             "params": record.params.to_dict() if record.params else None,
             "report": record.report,
@@ -512,6 +529,27 @@ class JobStore:
             plan,
             page_measure_offsets=offsets if isinstance(offsets, list) else [],
         ).to_dict()
+        accepted_measures = {
+            measure
+            for batch in batches
+            if batch.status == BatchStatus.ACCEPTED_ORIGINAL
+            for measure in batch.target_measures
+        }
+        findings = analysis.get("findings", [])
+        if isinstance(findings, list):
+            for finding in findings:
+                if (
+                    isinstance(finding, dict)
+                    and finding.get("kind") == "timing_measure_overflow"
+                    and finding.get("measure_start") in accepted_measures
+                ):
+                    finding["status"] = BatchStatus.ACCEPTED_ORIGINAL.value
+            analysis["requires_review"] = any(
+                isinstance(finding, dict)
+                and finding.get("severity") == "high"
+                and finding.get("status", "pending") == "pending"
+                for finding in findings
+            )
         outcome = AutoResolutionOutcome(
             candidate_path=candidate_path,
             batches=tuple(batches),
@@ -681,7 +719,7 @@ class JobStore:
                     record.stage = JobStatus.AWAITING_REVIEW.value
                     self._persist_record(record)
 
-    def create(self, filename: str) -> JobRecord:
+    def create(self, filename: str, input_kind: str = "pdf") -> JobRecord:
         workspace = create_job_workspace(self.base_dir)
         record = JobRecord(
             job_id=workspace.root.name,
@@ -689,6 +727,7 @@ class JobStore:
             status=JobStatus.PENDING,
             stage="uploaded",
             filename=filename,
+            input_kind=input_kind,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
         with self._lock:
@@ -752,12 +791,12 @@ class JobStore:
             record.review_decisions = []
             record.progress = None
             record.status = JobStatus.RUNNING
-            record.stage = "running_homr"
+            record.stage = "downloading_video_audio" if record.input_kind == "video_url" else "converting_audio" if record.input_kind == "audio" else "running_homr"
             self._persist_record(record)
         thread = threading.Thread(
             target=self._run,
             args=(record, params, debug),
-            name=f"homr-job-{record.job_id}",
+            name=f"{record.input_kind}-job-{record.job_id}",
             daemon=True,
         )
         thread.start()
@@ -991,15 +1030,23 @@ class JobStore:
     def _run(self, record: JobRecord, params: ConvertParams, debug: bool) -> None:
         with self._worker_lock:
             try:
-                report = run_conversion(
-                    record.workspace,
-                    params,
-                    stage=lambda name: self.set_stage(record, name),
-                    progress=lambda current, total, page, **details: self.set_progress(
-                        record, current, total, page, **details
-                    ),
-                    debug=debug,
-                )
+                if record.input_kind in {"audio", "video_url"}:
+                    report = run_audio_transcription(
+                        record.workspace,
+                        use_gpu=params.use_gpu,
+                        transkun_model=params.transkun_model,
+                        stage=lambda name: self.set_stage(record, name),
+                    )
+                else:
+                    report = run_conversion(
+                        record.workspace,
+                        params,
+                        stage=lambda name: self.set_stage(record, name),
+                        progress=lambda current, total, page, **details: self.set_progress(
+                            record, current, total, page, **details
+                        ),
+                        debug=debug,
+                    )
                 with self._lock:
                     record.report = report
                     report_status = report.get("status")

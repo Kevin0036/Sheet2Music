@@ -39,6 +39,7 @@ class JobWorkspace:
         self.root = root
         self.input_dir = root / "input"
         self.preview_dir = root / "preview"
+        self.audio_dir = root / "audio"
         self.pages_dir = root / "pages"
         self.page_geometry_dir = self.pages_dir / "geometry"
         self.layout_dir = root / "layout"
@@ -61,6 +62,7 @@ class JobWorkspace:
         for directory in (
             self.input_dir,
             self.preview_dir,
+            self.audio_dir,
             self.pages_dir,
             self.page_geometry_dir,
             self.layout_dir,
@@ -101,6 +103,22 @@ class JobWorkspace:
     @property
     def pdf_path(self) -> Path:
         return self.input_dir / "score.pdf"
+
+    @property
+    def audio_path(self) -> Path:
+        return self.input_dir / "score.mp3"
+
+    @property
+    def source_url_path(self) -> Path:
+        return self.input_dir / "source.url"
+
+    @property
+    def audio_wav_path(self) -> Path:
+        return self.audio_dir / "score.wav"
+
+    @property
+    def beats_path(self) -> Path:
+        return self.audio_dir / "beats.json"
 
     def artifacts(self) -> list[ArtifactInfo]:
         """可下载产物：规范输出（score.musicxml / score.mid / score.mp3 / score.zip）

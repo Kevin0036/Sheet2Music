@@ -35,6 +35,12 @@ class ModelsTest(unittest.TestCase):
         self.assertFalse(ConvertParams.validate(120, "4/4", ["midi"]).use_gpu)
         self.assertTrue(ConvertParams.validate(120, "4/4", ["midi"], use_gpu=True).use_gpu)
 
+    def test_validate_transkun_model(self) -> None:
+        self.assertEqual(ConvertParams.validate(120, "4/4", ["midi"]).transkun_model, "v2")
+        self.assertEqual(ConvertParams.validate(120, "4/4", ["midi"], transkun_model="v2_aug").transkun_model, "v2_aug")
+        with self.assertRaises(ValidationError):
+            ConvertParams.validate(120, "4/4", ["midi"], transkun_model="unknown")
+
     def test_validate_outputs_rejects_empty_and_unknown(self) -> None:
         with self.assertRaises(ValidationError):
             ConvertParams.validate(120, "4/4", [])
@@ -67,6 +73,11 @@ class ModelsTest(unittest.TestCase):
         )
 
         self.assertEqual(params.structure_plan["time_signature_changes"][0]["signature"], "2/4")
+
+    def test_validate_accepts_pickup_measure_flag(self) -> None:
+        params = ConvertParams.validate(80, "4/4", ["midi"], has_pickup_measure=True)
+        self.assertTrue(params.has_pickup_measure)
+        self.assertTrue(params.to_dict()["has_pickup_measure"])
 
     def test_validate_rejects_non_mapping_structure_plan(self) -> None:
         with self.assertRaises(ValidationError):

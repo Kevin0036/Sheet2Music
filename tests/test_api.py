@@ -24,7 +24,7 @@ from sheet2music.core.settings import pdftoppm_binary
 from sheet2music.core.models import ConvertParams, JobStatus
 
 from sheet2music.web import app as web_app
-from sheet2music.web.jobs import ReviewError, summarize_review_changes
+from sheet2music.web.jobs import ReviewError, normalize_review_decisions, summarize_review_changes
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 16
@@ -58,6 +58,49 @@ def _fresh_store(base: Path):
 
 
 class JobPersistenceTest(unittest.TestCase):
+    def test_restart_refreshes_exhausted_automatic_batches_in_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir) / "jobs"
+            first = _fresh_store(base)
+            record = first.create("score.pdf")
+            record.status = JobStatus.AWAITING_REVIEW
+            record.stage = JobStatus.AWAITING_REVIEW.value
+            record.params = ConvertParams(bpm=80, outputs=["midi"])
+            candidate = record.workspace.output_dir / "score.auto.musicxml"
+            candidate.write_text(
+                """<score-partwise version=\"4.0\"><part id=\"P1\"><measure number=\"1\">
+                <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+                <note><rest/><duration>20</duration><voice>1</voice><staff>1</staff></note>
+                </measure></part></score-partwise>""",
+                encoding="utf-8",
+            )
+            batch = AutoResolutionBatch(
+                batch_id="p1-s0-m1",
+                page_number=1,
+                system_index=0,
+                target_measures=(1,),
+                context_range=(1, 1),
+                status=BatchStatus.NEEDS_UPLOAD,
+                attempts=[
+                    {"variant": name, "status": "succeeded"}
+                    for name in ("standard", "contrast", "context")
+                ],
+            )
+            AutoResolutionStore(record.workspace.auto_resolution_dir / "batches.json").save([batch])
+            record.report = {"page_measure_offsets": [], "analysis": {"findings": []}}
+            record.analysis = {"findings": []}
+            first._persist_record(record)
+
+            restored = _fresh_store(base).get(record.job_id)
+
+        assert restored is not None
+        assert restored.report is not None
+        auto_report = restored.report["auto_resolution"]
+        assert isinstance(auto_report, dict)
+        self.assertEqual(auto_report["batches"][0]["status"], "accepted_original")
+        self.assertEqual(auto_report["needs_upload_count"], 0)
+        self.assertFalse(restored.report["analysis"]["requires_review"])
+
     def test_start_clears_previous_automatic_resolution_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir) / "jobs"
@@ -302,6 +345,54 @@ class JobPersistenceTest(unittest.TestCase):
 
 
 class ApiValidationTest(ApiTest):
+    def test_video_url_upload_creates_video_job(self) -> None:
+        response = self.client.post("/api/video-url", json={"url": "https://youtu.be/abc"})
+        self.assertEqual(response.status_code, 200, response.text)
+        record = web_app.store.get(response.json()["job_id"])
+        assert record is not None
+        self.assertEqual(record.input_kind, "video_url")
+        self.assertEqual(record.stage, "video_url_uploaded")
+
+    def test_video_url_upload_rejects_other_hosts(self) -> None:
+        response = self.client.post("/api/video-url", json={"url": "https://example.com/video"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_audio_upload_creates_an_audio_job(self) -> None:
+        response = self.client.post(
+            "/api/audio",
+            files={"file": ("song.mp3", b"ID3" + b"0" * 32, "audio/mpeg")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        record = web_app.store.get(payload["job_id"])
+        assert record is not None
+        self.assertEqual(record.input_kind, "audio")
+        self.assertEqual(record.stage, "audio_uploaded")
+        self.assertTrue(record.workspace.audio_path.exists())
+
+    def test_audio_upload_rejects_non_mp3(self) -> None:
+        response = self.client.post(
+            "/api/audio",
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_audio_conversion_uses_audio_pipeline_and_fixed_outputs(self) -> None:
+        record = web_app.store.create("song.mp3", input_kind="audio")
+        record.workspace.audio_path.write_bytes(b"ID3")
+        web_app.store.save(record)
+        with mock.patch("sheet2music.web.jobs.run_audio_transcription", return_value={"status": "completed"}) as run_audio:
+            response = self.client.post("/api/convert", json={"job_id": record.job_id})
+            self.assertEqual(response.status_code, 200, response.text)
+            for _ in range(100):
+                if record.status == JobStatus.COMPLETED:
+                    break
+                time.sleep(0.01)
+
+        run_audio.assert_called_once()
+        self.assertEqual(record.status, JobStatus.COMPLETED)
+
     def test_upload_rejects_non_pdf(self) -> None:
         resp = self.client.post("/api/preview", files={"file": ("a.txt", b"hello", "text/plain")})
         self.assertEqual(resp.status_code, 400)
@@ -506,6 +597,49 @@ class ReviewChangeSummaryTest(unittest.TestCase):
 
 class ApiReviewWorkflowTest(ApiTest):
     finding_id = "time_signature_change:P1:-:2:2"
+
+    def test_accepted_original_findings_do_not_require_review_decisions(self) -> None:
+        analysis = {
+            "findings": [
+                {
+                    "id": "timing_measure_overflow:P1:-:14:14",
+                    "severity": "high",
+                    "status": "accepted_original",
+                },
+                {
+                    "id": self.finding_id,
+                    "severity": "high",
+                    "status": "pending",
+                    "available_actions": ["preserve", "ignore"],
+                },
+            ]
+        }
+
+        normalized = normalize_review_decisions(
+            analysis,
+            [{"id": self.finding_id, "action": "preserve"}],
+        )
+
+        self.assertEqual([item["id"] for item in normalized], [self.finding_id])
+
+    def test_ignore_is_allowed_for_findings_with_other_limited_actions(self) -> None:
+        analysis = {
+            "findings": [
+                {
+                    "id": self.finding_id,
+                    "severity": "high",
+                    "status": "pending",
+                    "available_actions": ["preserve", "reidentify"],
+                }
+            ]
+        }
+
+        normalized = normalize_review_decisions(
+            analysis,
+            [{"id": self.finding_id, "action": "ignore"}],
+        )
+
+        self.assertEqual(normalized[0]["action"], "ignore")
 
     def _pending_record(self):
         record = web_app.store.create("score.pdf")

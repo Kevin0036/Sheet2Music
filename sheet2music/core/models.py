@@ -62,6 +62,8 @@ class ConvertParams:
     time_signature: str = "4/4"
     outputs: list[str] = field(default_factory=list)
     use_gpu: bool = False
+    transkun_model: str = "v2"
+    has_pickup_measure: bool = False
     structure_plan: dict[str, object] | None = None
 
     @classmethod
@@ -72,12 +74,18 @@ class ConvertParams:
         outputs: object,
         use_gpu: object = False,
         structure_plan: object = None,
+        has_pickup_measure: object = False,
+        transkun_model: object = "v2",
     ) -> "ConvertParams":
         validated_bpm = validate_bpm(bpm)
         parse_time_signature(str(time_signature))
         validated_outputs = validate_outputs(outputs)
         if not isinstance(use_gpu, bool):
             raise ValidationError(f"use_gpu 必须是布尔值，收到: {use_gpu!r}")
+        if not isinstance(has_pickup_measure, bool):
+            raise ValidationError("has_pickup_measure 必须是布尔值")
+        if transkun_model not in {"v2", "v2_aug"}:
+            raise ValidationError(f"未知的 Transkun 模型: {transkun_model!r}")
         validated_structure_plan: dict[str, object] | None = None
         if structure_plan is not None:
             if not isinstance(structure_plan, Mapping):
@@ -98,6 +106,8 @@ class ConvertParams:
             time_signature=str(time_signature),
             outputs=validated_outputs,
             use_gpu=use_gpu,
+            transkun_model=str(transkun_model),
+            has_pickup_measure=has_pickup_measure,
             structure_plan=validated_structure_plan,
         )
 

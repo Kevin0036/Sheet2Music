@@ -12,3 +12,7 @@ jobs/
 # 模型权重不进入仓库：首次使用在界面「环境检查」中一键下载
 vendor/homr/homr/**/*.onnx
 vendor/homr/homr/**/*.onnx.zip
+# Transkun / Beat This 大模型由本机管理，不进入仓库
+models/
+smoke-test/
+checkpointTransformer*.zip
