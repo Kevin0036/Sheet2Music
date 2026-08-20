@@ -16,3 +16,14 @@ vendor/homr/homr/**/*.onnx.zip
 models/
 smoke-test/
 checkpointTransformer*.zip
+
+# 本机样例与人工验收输入，不属于发布产物
+audio/
+sheets/
+
+# 本地克隆的外部源码；部署时按 README 单独准备
+vendor/Transkun/
+vendor/music-to-midi/
+
+# 临时目录与手工验收输出
+nested/

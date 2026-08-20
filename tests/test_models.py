@@ -41,6 +41,9 @@ class ModelsTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ConvertParams.validate(120, "4/4", ["midi"], transkun_model="unknown")
 
+    def test_validate_audio_score_pdf_option(self) -> None:
+        self.assertTrue(ConvertParams.validate(120, "4/4", ["midi"], generate_pdf=True).generate_pdf)
+
     def test_validate_outputs_rejects_empty_and_unknown(self) -> None:
         with self.assertRaises(ValidationError):
             ConvertParams.validate(120, "4/4", [])

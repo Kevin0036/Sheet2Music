@@ -51,3 +51,33 @@ class AudioMidiTest(unittest.TestCase):
             metadata = [message for message in rewritten.tracks[0] if message.is_meta]
             self.assertEqual([message.tempo for message in metadata if message.type == "set_tempo"], [mido.bpm2tempo(90.0)])
             self.assertEqual([(message.numerator, message.denominator) for message in metadata if message.type == "time_signature"], [(3, 4)])
+
+    def test_rewrite_can_preserve_seconds_with_a_variable_tempo_map(self) -> None:
+        from sheet2music.core.audio_midi import rewrite_midi_metadata_preserving_seconds
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.mid"
+            target = Path(temp_dir) / "target.mid"
+            midi = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            track.extend(
+                [
+                    mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+                    mido.Message("note_on", note=60, velocity=80, time=480),
+                    mido.Message("note_off", note=60, velocity=0, time=960),
+                ]
+            )
+            midi.tracks.append(track)
+            midi.save(source)
+
+            rewrite_midi_metadata_preserving_seconds(
+                source,
+                target,
+                bpm=120.0,
+                time_signature=None,
+                tempo_map=[(0.0, 120.0), (1.0, 60.0)],
+            )
+            rewritten = mido.MidiFile(str(target))
+            tempos = [message.tempo for message in rewritten.tracks[0] if message.type == "set_tempo"]
+            self.assertEqual(tempos, [mido.bpm2tempo(120.0), mido.bpm2tempo(60.0)])
+            self.assertAlmostEqual(rewritten.length, mido.MidiFile(str(source)).length, places=3)

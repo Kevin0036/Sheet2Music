@@ -136,7 +136,10 @@ body {
   border-color: var(--primary);
   background: #f0f6ff;
 }
-.dz-title { margin: 0 0 14px; color: var(--muted); }
+.dz-title { margin: 0 0 8px; color: var(--text); font-size: 16px; }
+.dz-title strong { color: var(--primary); }
+.dz-fallback { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+.dz-action { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
 
 .preview-area img {
   width: 100%;
@@ -167,6 +170,7 @@ fieldset {
 }
 legend { font-size: 13px; padding: 0 4px; }
 label.checkbox { display: inline-block; margin: 6px 14px 6px 0; }
+#piano-score-output[hidden] { display: none; }
 
 .actions { display: flex; gap: 10px; margin-top: 18px; }
 

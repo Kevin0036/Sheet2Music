@@ -31,6 +31,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["httpx"]
+audio = [
+    # Transkun V2 inference; install after selecting the required CUDA PyTorch build.
+    "beat-this",
+    "moduleconf",
+    "pretty-midi",
+    "mir-eval",
+    "pydub",
+]
 
 [project.scripts]
 sheet2music = "sheet2music.web.app:main"

@@ -6,6 +6,7 @@ const STAGES = [
   ["repairing_musicxml", "修复 MusicXML 拍号/时值"],
   ["exporting_midi", "导出并归一化 MIDI"],
   ["rendering_mp3", "渲染 MP3"],
+  ["rendering_pdf", "生成钢琴谱 PDF"],
   ["completed", "完成"],
   ["failed", "失败"],
 ];
@@ -28,6 +29,7 @@ STAGES.splice(
   ["awaiting_review", "等待人工审查"],
   ["exporting_midi", "导出 MIDI"],
   ["rendering_mp3", "渲染 MP3"],
+  ["rendering_pdf", "生成钢琴谱 PDF"],
   ["completed", "完成"],
   ["failed", "失败"]
 );
@@ -42,6 +44,8 @@ const gpuInput = $("use-gpu");
 const transkunModelInput = $("transkun-model");
 const pickupInput = $("has-pickup-measure");
 const outputsFieldset = $("outputs");
+const pianoScoreOutput = $("piano-score-output");
+const generatePdfInput = $("generate-pdf");
 const convertBtn = $("convert-btn");
 const resetBtn = $("reset-btn");
 const reviewPanel = $("review-panel");
@@ -80,19 +84,23 @@ let latestSystemStatus = null;
 
 function setParamsEnabled(enabled) {
   enabledForGpuControl = enabled;
-  bpmInput.disabled = !enabled;
-  timeSigInput.disabled = !enabled;
+  const isAudioInput = ["audio", "video_url"].includes(currentInputKind);
+  bpmInput.disabled = !enabled || isAudioInput;
+  timeSigInput.disabled = !enabled || isAudioInput;
   const gpuReady = currentInputKind === "pdf"
     ? Boolean(latestSystemStatus && latestSystemStatus.gpu && latestSystemStatus.gpu.ok)
     : Boolean(latestSystemStatus && latestSystemStatus.pytorch_cuda && latestSystemStatus.pytorch_cuda.ok);
   gpuInput.disabled = !enabled || !gpuReady;
-  transkunModelInput.disabled = !enabled || currentInputKind === "pdf";
+  transkunModelInput.disabled = !enabled || !isAudioInput;
   pickupInput.disabled = !enabled;
   outputsFieldset.disabled = !enabled;
+  pianoScoreOutput.hidden = !isAudioInput;
+  generatePdfInput.disabled = !enabled || !isAudioInput;
   convertBtn.disabled = !enabled || !isParamsValid();
 }
 
 function isParamsValid() {
+  if (["audio", "video_url"].includes(currentInputKind)) return true;
   const bpm = Number(bpmInput.value);
   return Number.isInteger(bpm) && bpm > 0;
 }
@@ -117,6 +125,7 @@ function resetToEmpty() {
   $("error-box").hidden = true;
   $("drop-zone").hidden = false;
   fileInput.value = "";
+  generatePdfInput.checked = false;
   setParamsEnabled(false);
   resetBtn.disabled = true;
 }
@@ -157,13 +166,14 @@ async function handleFile(file) {
       $("preview-img").hidden = true;
       $("preview-area").hidden = false;
     }
-    $("file-meta").textContent = data.filename + (isAudio ? " · 已上传，Beat This 将自动检测节奏" : " · 已上传，等待转换");
+    $("file-meta").textContent = data.filename + (isAudio ? " · MP3 推荐流程已就绪，Beat This 将自动检测节奏" : " · PDF 备用流程已就绪，等待转换");
     $("drop-zone").hidden = true;
     resetToPreview();
     if (isAudio) {
       bpmInput.value = "120";
       bpmInput.disabled = true;
       timeSigInput.disabled = true;
+      generatePdfInput.checked = false;
       outputsFieldset.querySelectorAll("input").forEach((input) => { input.checked = input.value === "midi" || input.value === "mp3"; });
       convertBtn.disabled = false;
     }
@@ -187,9 +197,10 @@ async function startConvert() {
         bpm: ["audio", "video_url"].includes(currentInputKind) ? null : Number(bpmInput.value),
         time_signature: timeSigInput.value.trim() || "4/4",
         outputs: selectedOutputs(),
-      use_gpu: gpuInput.checked,
+        use_gpu: gpuInput.checked,
         transkun_model: transkunModelInput.value,
         has_pickup_measure: pickupInput.checked,
+        generate_pdf: generatePdfInput.checked,
       }),
     });
     const data = await resp.json();
@@ -221,16 +232,21 @@ async function pollJob() {
   }
 }
 
-function showProgress() {
+function showProgress(includePianoScore = generatePdfInput.checked) {
   $("progress").hidden = false;
   $("results").hidden = true;
   $("error-box").hidden = true;
-  $("stages").innerHTML = STAGES.map(
+  $("stages").innerHTML = STAGES.filter(
+    ([key]) => key !== "rendering_pdf" || includePianoScore
+  ).map(
     ([key, label]) => `<li data-stage="${key}">${label}</li>`
   ).join("");
 }
 
 function renderStages(job) {
+  if (job.params && job.params.generate_pdf && !document.querySelector('#stages [data-stage="rendering_pdf"]')) {
+    showProgress(true);
+  }
   const activeIndex = STAGES.findIndex(([key]) => key === job.stage);
   document.querySelectorAll("#stages li").forEach((li) => {
     const index = STAGES.findIndex(([key]) => key === li.dataset.stage);
@@ -271,6 +287,7 @@ async function handleVideoUrl() {
     bpmInput.value = "120";
     bpmInput.disabled = true;
     timeSigInput.disabled = true;
+    generatePdfInput.checked = false;
     outputsFieldset.querySelectorAll("input").forEach((input) => { input.checked = input.value === "midi" || input.value === "mp3"; });
     convertBtn.disabled = false;
   } catch (err) {
@@ -921,7 +938,7 @@ function showResults(job) {
 
   const downloads = $("downloads");
   downloads.innerHTML = "";
-  const wanted = new Set(["musicxml", "midi", "mp3", "zip"]);
+  const wanted = new Set(["musicxml", "midi", "mp3", "pdf", "zip"]);
   job.artifacts
     .filter((a) => wanted.has(a.kind))
     .forEach((a) => {

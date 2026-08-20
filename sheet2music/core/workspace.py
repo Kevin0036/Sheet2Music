@@ -14,7 +14,7 @@ from pathlib import Path
 class ArtifactInfo:
     name: str
     path: Path
-    kind: str  # musicxml | midi | mp3 | zip | report
+    kind: str  # musicxml | midi | mp3 | pdf | zip | report
     size: int
 
     def to_dict(self) -> dict[str, object]:
@@ -32,7 +32,7 @@ class JobWorkspace:
       homr_raw/page-1.musicxml ...
       homr_fixed/page-1.musicxml ...
       homr_work/<page>/...         HOMR 子进程工作目录
-      output/score.musicxml score.mid score.mp3 score.zip report.json
+      output/score.musicxml score.mid score.mp3 score.pdf score.zip report.json
     """
 
     def __init__(self, root: Path) -> None:
@@ -130,7 +130,7 @@ class JobWorkspace:
         for path in sorted(self.output_dir.iterdir()):
             if not path.is_file():
                 continue
-            if path.name.startswith("score.raw."):
+            if path.name.startswith("score.raw.") or path.name == "score.notation.mid":
                 continue
             artifacts.append(self._artifact(path))
         return artifacts
@@ -141,6 +141,7 @@ class JobWorkspace:
             ".musicxml": "musicxml",
             ".mid": "midi",
             ".mp3": "mp3",
+            ".pdf": "pdf",
             ".zip": "zip",
             ".json": "report",
         }.get(suffix, suffix.lstrip("."))

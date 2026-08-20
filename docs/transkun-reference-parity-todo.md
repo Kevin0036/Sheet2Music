@@ -5,7 +5,8 @@
 让 Sheet2Music 的钢琴专用 Transkun 路径在相同模型与规范化音频输入下，
 输出与 `vendor/music-to-midi` 的钢琴 Transkun 路径事件级等价的 MIDI；随后以
 `audio/` 中三首曲目完成实际试听验收。该阶段不实现网页 MIDI 编辑器（Step 2），
-不实现 PDF 与 MP3 联合校音（Step 3），也不做自动量化或变速曲速度图。
+不实现 PDF 与 MP3 联合校音（Step 3），也不做自动量化；变速曲仅把 Beat This 的
+tempo map 写入 MIDI conductor metadata，绝不改变 Transkun 事件的实际秒数。
 
 ## 已验证事实
 
@@ -40,8 +41,8 @@
 - [x] 扩展 `beats.json` 和 `report.json`，记录原始/清洗后的 beats、downbeats、
   BPM、拍号、清理统计和模型身份，供问题追溯。
 - [x] 将原始 Transkun 产物保存为 `output/score.raw.mid`；生成面向用户的
-  `output/score.mid` 时，仅重写全局 BPM 与可用拍号，保持所有非 tempo 事件的
-  绝对秒不变。第一阶段不写可变速度图。
+  `output/score.mid` 时，写入 Beat This tempo map 与可用拍号，保持所有非 metadata
+  事件的绝对秒不变。没有自动量化、音符增删或节拍位置移动。
 - [x] 使用规范化后的 `score.mid` 回渲染 `score.mp3`；原始 MIDI 只留作审计，
   不列入下载产物。
 - [x] 更新系统状态和模型选择文字，使其准确显示参考兼容 V2、V2 Aug、Beat This
@@ -52,8 +53,8 @@
 - [x] 为 WAV 转换命令增加双声道 PCM16 断言，并验证 Beat This 与 Transkun 收到
   同一路径。
 - [x] 覆盖模型身份、未知模型、哈希不匹配和严格加载失败的明确错误。
-- [x] 覆盖 Beat This 网格清理、漏拍恢复、全局 BPM 拟合、拍号置信度与拒绝无效
-  网格；不覆盖已明确排除的可变速度图。
+- [x] 覆盖 Beat This 网格清理、漏拍恢复、全局 BPM 拟合、拍号置信度、可变速度图
+  与拒绝无效网格。
 - [x] 覆盖 MIDI 元数据重写：音符、控制器和其他非 tempo 事件绝对秒不变；BPM 与
   拍号正确写入；`score.raw.mid` 不被改写。
 - [x] 更新音频任务、报告、系统状态和 PDF 回归测试；mock ffmpeg、Beat This、
@@ -80,3 +81,14 @@
 
 Step 1 只有在相同模型和规范化 WAV 下与参考项目音符事件完全一致、三首本地曲目
 完成试听与下载验收、里程碑文档已更新且 README 已更新后，才可标记为完成。
+
+## 2026-08-20：运输时长修正
+
+- [x] 复现并修复 FluidSynth `WAV 过短` 的错误：MIDI 时长计算使用有效 tempo map，
+  只以真实 channel event 为边界，忽略延迟的 `end_of_track`。
+- [x] 音频/视频回渲染按输入 WAV transport 时长裁剪或补零，避免 CC64 自然释放把
+  4:04 的曲目导出为 4:19。
+- [x] 在 Yorushika 实曲上验证：修正 MIDI `242.497s`，下载 WAV `244.035918s`，
+  Beat This tempo map 有 `197` 个点，MIDI 非 metadata 事件秒数保持不变。
+- [x] 使用同一完整曲目完成 MP3 导出验收：源音频 `244.036s`，下载 MP3 `244.04s`；
+  临时输出命名固定为 `.score.part.mp3`，确保 ffmpeg 通过扩展名识别 MP3 容器。

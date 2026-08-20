@@ -49,6 +49,14 @@ def export_midi(input_musicxml: Path, midi_path: Path) -> None:
         raise FileNotFoundError(f"MuseScore did not emit {midi_path}")
 
 
+def export_pdf(input_midi: Path, pdf_path: Path) -> None:
+    """Render a MIDI file as a printable piano score with MuseScore."""
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_musescore(["-f", "-o", str(pdf_path), str(input_midi)])
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"MuseScore did not emit {pdf_path}")
+
+
 def render_wav(input_score: Path, wav_path: Path) -> None:
     wav_path.parent.mkdir(parents=True, exist_ok=True)
     _run_musescore(["-f", "-o", str(wav_path), str(input_score)])
@@ -73,7 +81,12 @@ def transcode_mp3(wav_path: Path, mp3_path: Path) -> None:
         raise FileNotFoundError(f"ffmpeg did not emit {mp3_path}")
 
 
-def render_mp3(input_score: Path, mp3_path: Path) -> Path:
+def render_mp3(
+    input_score: Path,
+    mp3_path: Path,
+    *,
+    target_duration: float | None = None,
+) -> Path:
     """Render a MIDI file with the shared FluidSynth playback pipeline."""
-    render_midi_to_mp3(input_score, mp3_path)
+    render_midi_to_mp3(input_score, mp3_path, target_duration=target_duration)
     return mp3_path

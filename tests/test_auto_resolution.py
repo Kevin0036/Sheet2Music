@@ -23,6 +23,7 @@ from sheet2music.core.auto_resolution import (
     build_image_variants,
     candidate_fingerprint,
     choose_candidate,
+    automatic_attempts_exhausted,
     validate_batch_candidate_artifact,
     validate_candidate,
 )
@@ -328,6 +329,35 @@ class CandidateValidationTest(unittest.TestCase):
 
 
 class CandidateSelectionTest(unittest.TestCase):
+    def test_automatic_attempts_are_exhausted_after_three_variants(self) -> None:
+        batch = AutoResolutionBatch(
+            batch_id="p1-s0-m1",
+            page_number=1,
+            system_index=0,
+            target_measures=(1,),
+            context_range=(1, 1),
+            attempts=[
+                {"variant": name, "status": "succeeded"}
+                for name in ("standard", "contrast", "context")
+            ],
+        )
+
+        self.assertTrue(automatic_attempts_exhausted(batch))
+
+    def test_layout_mapping_failure_is_accepted_without_manual_upload(self) -> None:
+        batch = AutoResolutionBatch(
+            batch_id="p2-s0-m14",
+            page_number=2,
+            system_index=0,
+            target_measures=(14,),
+            context_range=(13, 14),
+            attempts=[
+                {"variant": None, "status": "failed", "error": "layout_mapping_ambiguous"}
+            ],
+        )
+
+        self.assertTrue(automatic_attempts_exhausted(batch))
+
     def test_two_variants_with_same_candidate_auto_resolve(self) -> None:
         choice = choose_candidate(
             [_validation("standard", "same"), _validation("contrast", "same")]
@@ -376,6 +406,22 @@ class ImageVariantTest(unittest.TestCase):
 
 
 class BatchPersistenceTest(unittest.TestCase):
+    def test_batch_store_accepts_exhausted_failed_batch_on_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "batches.json"
+            store = AutoResolutionStore(state_path)
+            batch = _batch()
+            batch.status = BatchStatus.NEEDS_UPLOAD
+            batch.attempts = [
+                {"variant": name, "status": "succeeded"}
+                for name in ("standard", "contrast", "context")
+            ]
+
+            store.save([batch])
+            restored = store.load()
+
+        self.assertEqual(restored[0].status, BatchStatus.ACCEPTED_ORIGINAL)
+
     def test_batch_store_round_trips_completed_attempts_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "batches.json"
@@ -388,6 +434,39 @@ class BatchPersistenceTest(unittest.TestCase):
 
             self.assertEqual(restored[0].attempts[0]["variant"], "standard")
             self.assertFalse(state_path.with_suffix(".json.tmp").exists())
+
+    def test_accepted_original_batch_is_not_rerun_after_reload(self) -> None:
+        from sheet2music.core.workspace import JobWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = JobWorkspace(Path(temp_dir) / "job").create()
+            base_xml = workspace.root / "base.musicxml"
+            ET.ElementTree(_score()).write(base_xml, encoding="utf-8")
+            batch = _batch()
+            batch.status = BatchStatus.ACCEPTED_ORIGINAL
+            batch.attempts = [
+                {"variant": name, "status": "failed"}
+                for name in ("standard", "contrast", "context")
+            ]
+            called = mock.Mock()
+
+            with (
+                mock.patch.object(auto_resolution, "reconcile_batches", return_value=[batch]),
+                mock.patch.object(auto_resolution.AutoResolutionRunner, "resolve_batch", called),
+            ):
+                outcome = auto_resolution.resolve_timing_overflows(
+                    workspace=workspace,
+                    base_xml=base_xml,
+                    analysis={"findings": []},
+                    page_layouts=[],
+                    page_measure_offsets=[],
+                    structure_plan=ScoreStructurePlan.from_dict({}),
+                    tempo_bpm=None,
+                    use_gpu=False,
+                )
+
+        called.assert_not_called()
+        self.assertEqual(outcome.batches[0].status, BatchStatus.ACCEPTED_ORIGINAL)
 
     def test_runner_does_not_rerun_completed_variant(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -61,6 +61,64 @@ def _build_sample_score() -> ET.ElementTree:
 
 
 class RepairMusicXmlTest(unittest.TestCase):
+    def test_applies_forward_gap_repair_without_changing_note_durations(self) -> None:
+        root = ET.fromstring(
+            """
+            <score-partwise version="4.0">
+              <part id="P1">
+                <measure number="1">
+                  <attributes><divisions>4</divisions></attributes>
+                  <note><pitch><step>C</step><octave>4</octave></pitch>
+                  <duration>8</duration><voice>1</voice><staff>1</staff></note>
+                  <forward><duration>12</duration></forward>
+                  <note><pitch><step>D</step><octave>4</octave></pitch>
+                    <duration>8</duration><voice>1</voice><staff>1</staff></note>
+                </measure>
+              </part>
+            </score-partwise>
+            """
+        )
+
+        applied = repair.apply_deterministic_timing_decisions(
+            root,
+            repair.ScoreStructurePlan.from_dict({}),
+            [{
+                "action": "correct",
+                "kind": "timing_measure_overflow",
+                "part_id": "P1",
+                "measure_start": 1,
+                "suggestion": {"action": "repair_gap"},
+            }],
+        )
+
+        self.assertEqual(applied, 1)
+        measure = root.find("./part/measure")
+        assert measure is not None
+        self.assertIsNone(measure.find("forward"))
+        self.assertEqual([node.findtext("duration") for node in measure.findall("note")], ["8", "8"])
+
+    def test_forward_gap_repair_shortens_gap_without_shortening_notes(self) -> None:
+        measure = ET.fromstring(
+            """
+            <measure number="1">
+              <note><pitch><step>C</step><octave>4</octave></pitch>
+                <duration>4</duration><voice>1</voice><staff>1</staff></note>
+              <forward><duration>12</duration></forward>
+              <note><pitch><step>D</step><octave>4</octave></pitch>
+                <duration>4</duration><voice>1</voice><staff>1</staff></note>
+            </measure>
+            """
+        )
+
+        result = repair.preview_forward_gap_repair(measure, 8)
+
+        self.assertTrue(result.applied)
+        self.assertEqual(result.reductions, ((1, 12, 0),))
+        assert result.measure is not None
+        self.assertEqual(result.measure.findall("note")[0].findtext("duration"), "4")
+        self.assertEqual(result.measure.findall("note")[1].findtext("duration"), "4")
+        self.assertIsNone(result.measure.find("forward"))
+
     def test_deterministic_timing_repair_changes_only_provable_duration(self) -> None:
         measure = ET.fromstring(
             """

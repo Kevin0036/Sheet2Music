@@ -24,6 +24,9 @@ class JobWorkspaceTest(unittest.TestCase):
             self.assertTrue(workspace.auto_resolution_crop_dir.is_dir())
             self.assertTrue(workspace.auto_resolution_candidate_dir.is_dir())
             self.assertTrue(workspace.auto_resolution_validation_dir.is_dir())
+            self.assertTrue(workspace.audio_dir.is_dir())
+            self.assertEqual(workspace.audio_path.name, "score.mp3")
+            self.assertEqual(workspace.audio_wav_path.name, "score.wav")
 
     def test_artifacts_collection_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -35,6 +38,12 @@ class JobWorkspaceTest(unittest.TestCase):
             self.assertEqual(len(artifacts), 1)
             self.assertEqual(artifacts[0].name, "score.musicxml")
             self.assertEqual(artifacts[0].kind, "musicxml")
+
+            (workspace.output_dir / "score.pdf").write_bytes(b"%PDF")
+            self.assertEqual(workspace.artifacts()[-1].kind, "pdf")
+
+            (workspace.output_dir / "score.notation.mid").write_bytes(b"MThd")
+            self.assertNotIn("score.notation.mid", [artifact.name for artifact in workspace.artifacts()])
 
             workspace.cleanup()
             self.assertFalse(workspace.root.exists())

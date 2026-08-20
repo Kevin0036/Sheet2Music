@@ -21,3 +21,14 @@ class BeatGridTest(unittest.TestCase):
 
         with self.assertRaisesRegex(BeatThisGridError, "at least 8"):
             analyze_beat_this_grid([0.0, 0.5, 1.0], [0.0])
+
+    def test_exposes_variable_tempo_map_for_expressive_grid(self) -> None:
+        from sheet2music.core.beat_grid import analyze_beat_this_grid
+
+        result = analyze_beat_this_grid(
+            [0.0, 0.5, 1.0, 1.8, 2.6, 3.1, 3.6, 4.4, 5.2, 5.7],
+            [],
+        )
+
+        self.assertGreaterEqual(len(result["tempo_map"]), 2)
+        self.assertEqual(result["tempo_map"][0][0], 0.0)

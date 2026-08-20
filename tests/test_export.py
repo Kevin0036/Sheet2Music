@@ -35,6 +35,22 @@ class MuseScoreEnvironmentTest(unittest.TestCase):
 
         self.assertEqual(captured, [["-f", "-o", str(output_midi), str(input_score)]])
 
+    def test_exports_pdf_from_midi_with_musescore4_cli_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_midi = Path(temp_dir) / "score.mid"
+            output_pdf = Path(temp_dir) / "score.pdf"
+            input_midi.touch()
+            captured: list[list[str]] = []
+
+            def fake_run(args: list[str]) -> None:
+                captured.append(args)
+                output_pdf.touch()
+
+            with mock.patch.object(export, "_run_musescore", side_effect=fake_run):
+                export.export_pdf(input_midi, output_pdf)
+
+        self.assertEqual(captured, [["-f", "-o", str(output_pdf), str(input_midi)]])
+
 
 if __name__ == "__main__":
     unittest.main()

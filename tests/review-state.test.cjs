@@ -41,11 +41,12 @@ test("identifies whether a finding has an automatic repair to apply", () => {
   assert.equal(hasAutomaticRepairSuggestion({ sign: "G", line: 2 }), true);
   assert.equal(hasAutomaticRepairSuggestion({ action: "review" }), false);
   assert.equal(hasAutomaticRepairSuggestion({ action: "compress", corrected_note_count: 2 }), true);
+  assert.equal(hasAutomaticRepairSuggestion({ action: "repair_gap", resulting_beats: "4" }), true);
 });
 
 test("uses only review actions explicitly allowed by the finding", () => {
   assert.deepEqual(actionsForFinding({ available_actions: ["reidentify"] }), ["reidentify"]);
-  assert.deepEqual(actionsForFinding({}), ["preserve", "correct", "reidentify"]);
+  assert.deepEqual(actionsForFinding({}), ["preserve", "correct", "reidentify", "ignore"]);
 });
 
 test("formats beat positions and timing values as readable Chinese", () => {

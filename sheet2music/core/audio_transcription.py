@@ -11,7 +11,9 @@ from typing import Callable
 import miditoolkit
 
 from .audio_midi import rewrite_midi_metadata_preserving_seconds
-from .export import render_mp3
+from .export import export_pdf, render_mp3
+from .fluidsynth_renderer import wav_duration_seconds
+from .notation_midi import split_midi_for_piano_notation
 from .settings import beat_this_checkpoint, ffmpeg_binary, transkun_model_files, transkun_python, transkun_root
 from .workspace import JobWorkspace, write_report
 from .video_audio import download_video_audio
@@ -108,7 +110,14 @@ def validate_transkun_midi(path: Path) -> None:
         raise ValueError("Transkun MIDI 包含无效音符时值")
 
 
-def run_audio_transcription(workspace: JobWorkspace, *, use_gpu: bool, transkun_model: str = "v2", stage: Callable[[str], None] | None = None) -> dict[str, object]:
+def run_audio_transcription(
+    workspace: JobWorkspace,
+    *,
+    use_gpu: bool,
+    transkun_model: str = "v2",
+    generate_pdf: bool = False,
+    stage: Callable[[str], None] | None = None,
+) -> dict[str, object]:
     emit = stage or (lambda _name: None)
     source_url = None
     if workspace.source_url_path.exists():
@@ -117,6 +126,7 @@ def run_audio_transcription(workspace: JobWorkspace, *, use_gpu: bool, transkun_
         download_video_audio(source_url, workspace.audio_path)
     emit("converting_audio")
     transcode_input_to_wav(workspace.audio_path, workspace.audio_wav_path)
+    source_duration = wav_duration_seconds(workspace.audio_wav_path)
     emit("detecting_beats")
     detect_beats(workspace.audio_wav_path, workspace.beats_path, use_gpu=use_gpu)
     emit("running_transkun")
@@ -129,10 +139,20 @@ def run_audio_transcription(workspace: JobWorkspace, *, use_gpu: bool, transkun_
         midi_path,
         bpm=float(beat_detection["estimated_bpm"]),
         time_signature=tuple(beat_detection["time_signature"]) if beat_detection.get("time_signature") else None,
+        tempo_map=[tuple(entry) for entry in beat_detection.get("tempo_map", [])],
     )
     validate_transkun_midi(midi_path)
     emit("rendering_mp3")
-    render_mp3(midi_path, workspace.output_dir / "score.mp3")
+    render_mp3(
+        midi_path,
+        workspace.output_dir / "score.mp3",
+        target_duration=source_duration,
+    )
+    if generate_pdf:
+        emit("rendering_pdf")
+        notation_midi_path = workspace.output_dir / "score.notation.mid"
+        notation_hand_split = split_midi_for_piano_notation(midi_path, notation_midi_path)
+        export_pdf(notation_midi_path, workspace.output_dir / "score.pdf")
     workspace.audio_wav_path.unlink(missing_ok=True)
     weight_path, conf_path = transkun_model_files(transkun_model)
     report = {
@@ -142,10 +162,15 @@ def run_audio_transcription(workspace: JobWorkspace, *, use_gpu: bool, transkun_
         "transkun_model": transkun_model,
         "transkun_model_files": {"weight": str(weight_path), "conf": str(conf_path)},
         "beat_detection": beat_detection,
+        "source_duration_seconds": source_duration,
         "raw_midi": "output/score.raw.mid",
         "midi": "output/score.mid",
         "mp3": "output/score.mp3",
     }
+    if generate_pdf:
+        report["pdf"] = "output/score.pdf"
+        report["notation_midi"] = "output/score.notation.mid"
+        report["notation_hand_split"] = notation_hand_split.to_dict()
     write_report(workspace, report)
     emit("completed")
     return report

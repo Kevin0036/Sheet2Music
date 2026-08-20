@@ -90,6 +90,25 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(timeline.final_cursor_units, 16)
         self.assertEqual([event.duration_units for event in timeline.events], [0, 16])
 
+    def test_tracks_explicit_gap_per_staff_and_voice(self) -> None:
+        measure = ET.fromstring(
+            """
+            <measure number="1">
+              <note><pitch><step>C</step><octave>4</octave></pitch>
+                <duration>4</duration><voice>1</voice><staff>1</staff></note>
+              <forward><duration>8</duration></forward>
+              <note><pitch><step>D</step><octave>4</octave></pitch>
+                <duration>4</duration><voice>1</voice><staff>1</staff></note>
+            </measure>
+            """
+        )
+
+        timeline = analyze_measure(measure, divisions=4, beats=3, beat_type=4)
+
+        self.assertEqual([event.gap_before_units for event in timeline.events], [0, 8])
+        self.assertEqual(timeline.events[1].gap_source, "forward")
+        self.assertTrue(timeline.has_overflow)
+
     def test_notated_duration_handles_dots_and_triplets(self) -> None:
         self.assertEqual(notated_duration_units(_note("eighth", dots=1), 24), 18)
         self.assertEqual(notated_duration_units(_note("quarter", dots=2), 16), 28)

@@ -36,6 +36,7 @@ class ConversionError(RuntimeError):
 def validate_musicxml_boundaries(
     root: ET.Element,
     structure_plan: ScoreStructurePlan | dict[str, object] | None,
+    allowed_overflow_measures: set[int] | None = None,
 ) -> None:
     """Reject invalid cursors and notes extending beyond ordinary measure bounds."""
     plan = coerce_structure_plan(structure_plan)
@@ -51,8 +52,12 @@ def validate_musicxml_boundaries(
             timeline = analyze_measure(measure, divisions, beats, beat_type)
             label = measure.get("number") or str(ordinal)
             if timeline.diagnostics:
+                if allowed_overflow_measures and ordinal in allowed_overflow_measures:
+                    continue
                 failures.append(f"{part_id} 第 {label} 小节时间游标无效")
             elif timeline.has_overflow:
+                if allowed_overflow_measures and ordinal in allowed_overflow_measures:
+                    continue
                 occupied = fraction_text(
                     units_to_beats(timeline.maximum_note_end_units, divisions)
                 )
@@ -62,6 +67,32 @@ def validate_musicxml_boundaries(
                 )
     if failures:
         raise ConversionError("仍有未解决的小节时值问题：" + "；".join(failures))
+
+
+def _accepted_original_measures(preparation: dict[str, object]) -> set[int]:
+    auto_resolution = preparation.get("auto_resolution")
+    batches = auto_resolution.get("batches", []) if isinstance(auto_resolution, dict) else []
+    accepted: set[int] = set()
+    for batch in batches:
+        if not isinstance(batch, dict) or batch.get("status") != "accepted_original":
+            continue
+        targets = batch.get("target_measures", [])
+        if isinstance(targets, list):
+            accepted.update(item for item in targets if isinstance(item, int))
+    return accepted
+
+
+def _mark_accepted_original_findings(
+    analysis: object,
+    accepted_measures: set[int],
+) -> None:
+    findings = getattr(analysis, "findings", [])
+    for finding in findings:
+        if (
+            finding.kind in {"timing_measure_overflow", "timing_cursor_invalid"}
+            and finding.measure_start in accepted_measures
+        ):
+            finding.status = "accepted_original"
 
 
 def _musicxml_measure_count(path: Path) -> int:
@@ -214,7 +245,8 @@ def prepare_conversion(
         page_measure_offsets=page_measure_offsets,
     )
     has_timing_overflow = any(
-        finding.kind == "timing_measure_overflow" and finding.severity == "high"
+        finding.kind in {"timing_measure_overflow", "timing_cursor_invalid"}
+        and finding.severity == "high"
         for finding in analysis.findings
     )
     status = (
@@ -258,12 +290,22 @@ def prepare_conversion(
             use_gpu=params.use_gpu,
             progress=progress,
             debug=debug,
+            has_pickup_measure=params.has_pickup_measure,
         )
         analysis_source = outcome.candidate_path or combined_raw
         analysis = analyze_musicxml_tree(
             ET.parse(analysis_source).getroot(),
             plan,
             page_measure_offsets=page_measure_offsets,
+        )
+        _mark_accepted_original_findings(
+            analysis,
+            {
+                measure
+                for batch in outcome.batches
+                if batch.status.value == "accepted_original"
+                for measure in batch.target_measures
+            },
         )
         preparation["auto_resolution"] = outcome.to_dict(workspace.root)
         preparation["analysis"] = analysis.to_dict()
@@ -322,12 +364,22 @@ def resume_automatic_resolution(
         use_gpu=params.use_gpu,
         progress=progress,
         debug=debug,
+        has_pickup_measure=params.has_pickup_measure,
     )
     analysis_source = outcome.candidate_path or raw_path
     analysis = analyze_musicxml_tree(
         ET.parse(analysis_source).getroot(),
         plan,
         page_measure_offsets=offsets_value,
+    )
+    _mark_accepted_original_findings(
+        analysis,
+        {
+            measure
+            for batch in outcome.batches
+            if batch.status.value == "accepted_original"
+            for measure in batch.target_measures
+        },
     )
     updated = dict(preparation)
     updated["auto_resolution"] = outcome.to_dict(workspace.root)
@@ -351,10 +403,12 @@ def _reviewed_structure_plan(
     clef_overrides = list(plan.get("clef_overrides", []))
     for decision in review_decisions:
         action = decision.get("action")
-        if action not in {"preserve", "correct", "reidentify"}:
+        if action not in {"preserve", "correct", "reidentify", "ignore"}:
             raise ConversionError(f"invalid review action: {action!r}")
         if action == "reidentify":
             raise ConversionError("review decision still requires region re-identification")
+        if action == "ignore":
+            continue
 
         kind = str(decision.get("kind", ""))
         measure_start = int(decision.get("measure_start", 0))
@@ -449,6 +503,7 @@ def finalize_conversion(
     validate_musicxml_boundaries(
         ET.parse(combined_xml).getroot(),
         effective_structure_plan,
+        allowed_overflow_measures=_accepted_original_measures(preparation),
     )
 
     score_stats = {
@@ -470,7 +525,7 @@ def finalize_conversion(
 
     if "mp3" in params.outputs:
         emit_stage("rendering_mp3")
-        render_mp3(combined_xml, workspace.output_dir / "score.mp3")
+        render_mp3(midi_path, workspace.output_dir / "score.mp3")
 
     if "musicxml" not in params.outputs:
         combined_xml.unlink(missing_ok=True)

@@ -202,7 +202,9 @@ class JobStore:
                         params_payload.get("outputs", []),
                         params_payload.get("use_gpu", False),
                         params_payload.get("structure_plan"),
+                        has_pickup_measure=params_payload.get("has_pickup_measure", False),
                         transkun_model=params_payload.get("transkun_model", "v2"),
+                        generate_pdf=params_payload.get("generate_pdf", False),
                     )
                 status = JobStatus(str(payload.get("status", JobStatus.PENDING.value)))
                 error = payload.get("error") if isinstance(payload.get("error"), str) else None
@@ -1047,6 +1049,7 @@ class JobStore:
                         record.workspace,
                         use_gpu=params.use_gpu,
                         transkun_model=params.transkun_model,
+                        generate_pdf=params.generate_pdf,
                         stage=lambda name: self.set_stage(record, name),
                     )
                 else:
