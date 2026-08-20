@@ -388,6 +388,17 @@ class JobStore:
         params = record.params
         if params is None:
             raise ReviewError("job has no conversion parameters")
+        # Persisted batches from older runs can be exhausted without a final
+        # state transition. Treat three successful variants as accepting the
+        # original score so restart recovery remains deterministic.
+        for batch in batches:
+            if batch.status == BatchStatus.NEEDS_UPLOAD and batch.attempts and all(
+                attempt.get("status") == "succeeded" for attempt in batch.attempts
+            ):
+                batch.status = BatchStatus.ACCEPTED_ORIGINAL
+                batch.attempts.append(
+                    {"variant": None, "status": BatchStatus.ACCEPTED_ORIGINAL.value}
+                )
         base_path = self._automatic_candidate_path(record)
         plan = coerce_structure_plan(params.structure_plan, params.time_signature)
         store = AutoResolutionStore(record.workspace.auto_resolution_dir / "batches.json")

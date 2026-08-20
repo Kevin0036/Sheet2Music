@@ -79,8 +79,10 @@ class BatchStatus(str, Enum):
     VALIDATING = "validating"
     COMMITTING = "committing"
     AUTO_RESOLVED = "auto_resolved"
+    ACCEPTED_ORIGINAL = "accepted_original"
     NEEDS_CHOICE = "needs_choice"
     NEEDS_UPLOAD = "needs_upload"
+    ACCEPTED_ORIGINAL = "accepted_original"
     FAILED = "failed"
 
 
@@ -211,6 +213,9 @@ class AutoResolutionOutcome:
             "resolved_count": self.resolved_count,
             "needs_choice_count": self.needs_choice_count,
             "needs_upload_count": self.needs_upload_count,
+            "accepted_original_count": sum(
+                batch.status == BatchStatus.ACCEPTED_ORIGINAL for batch in self.batches
+            ),
             "candidate_path": (
                 _relative_path(self.candidate_path, workspace_root)
                 if self.candidate_path is not None
@@ -252,7 +257,26 @@ class AutoResolutionStore:
         raw_batches = payload.get("batches")
         if not isinstance(raw_batches, list):
             raise ValueError("automatic-resolution batches must be a list")
-        return [_batch_from_dict(item) for item in raw_batches]
+        batches = [_batch_from_dict(item) for item in raw_batches]
+        changed = False
+        for batch in batches:
+            if (
+                batch.status in {BatchStatus.NEEDS_UPLOAD, BatchStatus.FAILED}
+                and automatic_attempts_exhausted(batch)
+            ):
+                batch.status = BatchStatus.ACCEPTED_ORIGINAL
+                if not any(item.get("status") == "accepted_original" for item in batch.attempts):
+                    batch.attempts.append(
+                        {
+                            "variant": None,
+                            "status": "accepted_original",
+                            "reason": "自动候选均未通过安全检查，保留原始识别结果",
+                        }
+                    )
+                changed = True
+        if changed:
+            self.save(batches)
+        return batches
 
     def save_batch(self, batch: AutoResolutionBatch) -> None:
         batches = self.load()
@@ -303,7 +327,11 @@ def reconcile_batches(
         batch
         for batch in persisted
         if batch.batch_id not in current_ids
-        and batch.status in {BatchStatus.AUTO_RESOLVED, BatchStatus.COMMITTING}
+        and batch.status in {
+            BatchStatus.AUTO_RESOLVED,
+            BatchStatus.ACCEPTED_ORIGINAL,
+            BatchStatus.COMMITTING,
+        }
     )
     return reconciled
 
@@ -601,6 +629,7 @@ def resolve_timing_overflows(
     progress: Callable[..., None] | None = None,
     debug: bool = False,
     enable_measure_number_ocr: bool = True,
+    has_pickup_measure: bool = False,
 ) -> AutoResolutionOutcome:
     """Resolve grouped timing overflows using retained page images and sidecars."""
     findings = analysis.get("findings", [])
@@ -615,6 +644,7 @@ def resolve_timing_overflows(
                     page,
                     workspace.pages_dir / "raw" / f"page-{page.page_number}.png",
                     reader,
+                    has_pickup_measure=has_pickup_measure,
                 )
                 for page in layouts
             )
@@ -650,22 +680,27 @@ def resolve_timing_overflows(
             BatchStatus.NEEDS_CHOICE,
             BatchStatus.NEEDS_UPLOAD,
             BatchStatus.FAILED,
+            BatchStatus.ACCEPTED_ORIGINAL,
         }:
             _emit_batch_progress(progress, index, len(batches), batch, batches)
             continue
         page_system = page_systems.get((batch.page_number, batch.system_index))
-        if page_system is None or spec_confidence.get(
-            (batch.page_number, batch.system_index)
-        ) != "high":
+        if page_system is None:
             batch.status = BatchStatus.NEEDS_UPLOAD
             batch.attempts.append(
-                {"variant": None, "status": "failed", "error": "layout_mapping_ambiguous"}
+                {"variant": None, "status": "failed", "error": "layout_system_missing"}
+            )
+            _accept_original_after_automatic_failure(
+                batch, "自动定位缺少谱表系统，保留原始识别结果"
             )
             store.save_batch(batch)
             _emit_batch_progress(progress, index, len(batches), batch, batches)
             continue
 
         page, system = page_system
+        mapping_is_ambiguous = spec_confidence.get(
+            (batch.page_number, batch.system_index)
+        ) != "high"
         batch.status = BatchStatus.LOCATING
         store.save_batch(batch)
         raw_page = workspace.pages_dir / "raw" / f"page-{batch.page_number}.png"
@@ -682,6 +717,21 @@ def resolve_timing_overflows(
                     "status": "failed",
                     "error": f"crop_failed: {type(exc).__name__}: {exc}",
                 }
+            )
+            _accept_original_after_automatic_failure(
+                batch, "自动裁切失败，保留原始识别结果"
+            )
+            store.save_batch(batch)
+            _emit_batch_progress(progress, index, len(batches), batch, batches)
+            continue
+
+        if mapping_is_ambiguous:
+            batch.status = BatchStatus.NEEDS_UPLOAD
+            batch.attempts.append(
+                {"variant": None, "status": "failed", "error": "layout_mapping_ambiguous"}
+            )
+            _accept_original_after_automatic_failure(
+                batch, "自动定位结果存在歧义，保留原始识别结果"
             )
             store.save_batch(batch)
             _emit_batch_progress(progress, index, len(batches), batch, batches)
@@ -702,6 +752,16 @@ def resolve_timing_overflows(
             ),
         )
         if batch.status == BatchStatus.NEEDS_UPLOAD:
+            if automatic_attempts_exhausted(batch):
+                batch.status = BatchStatus.ACCEPTED_ORIGINAL
+                batch.attempts.append(
+                    {
+                        "variant": None,
+                        "status": "accepted_original",
+                        "reason": "自动候选均未能生成可用结果，保留原始识别结果",
+                    }
+                )
+                store.save_batch(batch)
             _emit_batch_progress(progress, index, len(batches), batch, batches)
             continue
 
@@ -787,7 +847,28 @@ def resolve_timing_overflows(
                 batch.status = BatchStatus.AUTO_RESOLVED
                 batch.selected_candidate = choice.selected_candidate
             else:
-                batch.status = BatchStatus.NEEDS_UPLOAD
+                batch.status = (
+                    BatchStatus.ACCEPTED_ORIGINAL
+                    if automatic_attempts_exhausted(batch)
+                    else BatchStatus.NEEDS_UPLOAD
+                )
+                if batch.status == BatchStatus.ACCEPTED_ORIGINAL:
+                    batch.attempts.append(
+                        {
+                            "variant": None,
+                            "status": "accepted_original",
+                            "reason": "候选未通过整谱边界验证，保留原始识别结果",
+                        }
+                    )
+        elif choice.status == BatchStatus.NEEDS_UPLOAD and automatic_attempts_exhausted(batch):
+            batch.status = BatchStatus.ACCEPTED_ORIGINAL
+            batch.attempts.append(
+                {
+                    "variant": None,
+                    "status": "accepted_original",
+                    "reason": "自动候选均未通过安全检查，保留原始识别结果",
+                }
+            )
         else:
             batch.status = choice.status
         store.save_batch(batch)
@@ -907,13 +988,16 @@ def validate_candidate(
         candidate_root,
         _localize_structure_plan(plan, context_start, expected_measure_count),
     )
-    target_overflows = [
+    target_timing_findings = [
         finding
         for finding in report.findings
-        if finding.kind == "timing_measure_overflow"
+        if finding.kind in {"timing_measure_overflow", "timing_cursor_invalid"}
         and finding.measure_start in local_targets
     ]
-    if any(finding.kind == "timing_measure_overflow" for finding in report.findings):
+    if any(
+        finding.kind in {"timing_measure_overflow", "timing_cursor_invalid"}
+        for finding in report.findings
+    ):
         reasons.append("measure_overflow")
     if any(finding.kind == "timing_cursor_invalid" for finding in report.findings):
         reasons.append("timing_cursor_invalid")
@@ -939,7 +1023,7 @@ def validate_candidate(
         reasons=tuple(dict.fromkeys(reasons)),
         fingerprint=candidate_fingerprint(candidate_root, fingerprint_targets),
         target_findings_before=len(batch.target_measures),
-        target_findings_after=len(target_overflows),
+        target_findings_after=len(target_timing_findings),
         has_strong_single_candidate_evidence=(
             not reasons and evidence.has_strong_visual_evidence
         ),
@@ -980,6 +1064,30 @@ def choose_candidate(validations: Sequence[CandidateValidation]) -> CandidateCho
         status=BatchStatus.NEEDS_UPLOAD,
         candidate_ids=tuple(item.candidate_id for item in accepted),
         reason="no_reliable_automatic_candidate",
+    )
+
+
+def automatic_attempts_exhausted(batch: AutoResolutionBatch) -> bool:
+    """Return true when no further useful automatic image attempt remains."""
+    if any(
+        item.get("status") == "failed"
+        and item.get("error") in {"layout_mapping_ambiguous", "crop_failed"}
+        for item in batch.attempts
+    ):
+        return True
+    completed = {
+        str(item.get("variant"))
+        for item in batch.attempts
+        if item.get("variant") in {"standard", "contrast", "context"}
+        and item.get("status") in {"succeeded", "failed"}
+    }
+    return completed == {"standard", "contrast", "context"}
+
+
+def _accept_original_after_automatic_failure(batch: AutoResolutionBatch, reason: str) -> None:
+    batch.status = BatchStatus.ACCEPTED_ORIGINAL
+    batch.attempts.append(
+        {"variant": None, "status": "accepted_original", "reason": reason}
     )
 
 
@@ -1176,7 +1284,10 @@ def _target_overflow_count(
     return sum(
         1
         for finding in findings
-        if getattr(finding, "kind", None) == "timing_measure_overflow"
+        if getattr(finding, "kind", None) in {
+            "timing_measure_overflow",
+            "timing_cursor_invalid",
+        }
         and getattr(finding, "measure_start", None) in targets
     )
 
@@ -1420,6 +1531,18 @@ def _batch_to_report_dict(
                 attempt[key] = _relative_path(Path(value), workspace_root)
         attempts.append(attempt)
     result["attempts"] = attempts
+    reasons: list[str] = []
+    for attempt in batch.attempts:
+        validation = attempt.get("validation")
+        if not isinstance(validation, Mapping):
+            continue
+        values = validation.get("reasons", [])
+        if not isinstance(values, list):
+            continue
+        for reason in values:
+            if isinstance(reason, str) and reason not in reasons:
+                reasons.append(reason)
+    result["failure_reasons"] = reasons
     return result
 
 

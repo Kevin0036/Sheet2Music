@@ -187,7 +187,7 @@ def system_status() -> dict[str, object]:
     except ImportError:
         pass
     accelerator_providers = available_gpu_providers()
-    if homr_root_info["ok"] and not fp16_missing and accelerator_providers:
+    if homr_root_info["ok"] and accelerator_providers:
         gpu_probe_ok, gpu_probe_detail = probe_cuda_provider()
     else:
         gpu_probe_ok = False
